@@ -29,6 +29,7 @@ MS_IS_ELEMENTS     = 0x100
 MS_IS_SLIP77       = 0x200
 MS_IS_ELIP150      = 0x400
 MS_IS_ELIP151      = 0x800
+MS_IS_TAPSCRIPT    = 0x1000
 
 NO_CHECKSUM = 0x1 # WALLY_MS_CANONICAL_NO_CHECKSUM
 
@@ -268,6 +269,9 @@ class DescriptorTests(unittest.TestCase):
              0, MS_IS_PRIVATE, 5, 2),
             (f'or_d(thresh(1,pk({k1})),and_v(v:thresh(1,pk({k2}/)),older(30)))',
              MS_ONLY, MS_IS_PRIVATE, 5, 2),
+            # tr() key-path only: MS_IS_TAPSCRIPT must NOT be set
+            (f'tr({k1})',
+             0, MS_IS_DESCRIPTOR, 2, 1),
         ]
         if is_elements_build:
             slip77 = 'ct(slip77(b2396b3ee20509cdb64fe24180a14a72dbd671728eaa49bac69d2bdecb5f5a04),elpkh(xpub69H7F5d8KSRgmmdJg2KhpAK8SR3DjMwAdkxj3ZuxV27CprR9LgpeyGmXUbC6wb7ERfvrnKZjXoUmmDznezpbZb7ap6r1D3tgFxHmwMkQTPH))'
@@ -334,6 +338,17 @@ class DescriptorTests(unittest.TestCase):
         ret = wally_descriptor_parse('pk())', None, NETWORK_NONE,
                                      flags | (5 << 16), d)
         self.assertEqual(ret, WALLY_EINVAL)
+
+        # tr() with taptree: MS_IS_TAPSCRIPT must be set in features
+        d = c_void_p()
+        desc_tree = f'tr({k1},{{pk({k1}),pk({k1})}})'
+        ret = wally_descriptor_parse(desc_tree, None, NETWORK_NONE, 0, d)
+        self.assertEqual(ret, WALLY_OK)
+        ret, features = wally_descriptor_get_features(d)
+        self.assertEqual(ret, WALLY_OK)
+        self.assertTrue(features & MS_IS_TAPSCRIPT, 'MS_IS_TAPSCRIPT not set for tr() with taptree')
+        self.assertTrue(features & MS_IS_DESCRIPTOR)
+        wally_descriptor_free(d)
 
     def test_policy(self):
         """Test policy parsing"""

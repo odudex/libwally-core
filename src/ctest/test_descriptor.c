@@ -414,6 +414,36 @@ static const struct descriptor_test {
         WALLY_NETWORK_BITCOIN_REGTEST, 0, 0, 0, NULL, 0,
         "51205fb8e39dbbdc7c831af59e44a9b2997f9daaf72c3e965b30982f3c731539e1db",
         "tp2ky708", VARS_STD
+    },{
+        "descriptor - tr - single leaf pk",
+        "tr(x_only,pk(key_1))",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0,
+        "5120951b6ab79b75bf3083163e8c4a3df1cba0928e07b3b2e3732503bb7fe6df804b",
+        "", VARS_STD
+    },{
+        "descriptor - tr - balanced 2-leaf",
+        "tr(x_only,{pk(key_1),pk(key_2)})",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0,
+        "512082a4c5d240cadcf568140691f751370be05e3da59df98c3b1e92a37f1bfd7dfe",
+        "", VARS_STD
+    },{
+        "descriptor - tr - unbalanced 3-leaf",
+        "tr(x_only,{pk(key_1),{pk(key_2),pk(key_3)}})",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0,
+        "51201edef6eaf60517b880b7c721436840e45c487f4f7d4b544848a1fa8ecae1a146",
+        "", VARS_STD
+    },{
+        "descriptor - tr - multi_a leaf",
+        "tr(x_only,multi_a(2,key_1,key_2,key_3))",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0,
+        "5120e96b74eb71c05f7362ab7977c829d78256685d87fc4e1e44545146466caedd19",
+        "", VARS_STD
+    },{
+        "descriptor - tr - mixed multi_a and and_v",
+        "tr(x_only,{multi_a(2,key_1,key_2,key_3),and_v(v:pk(key_1),older(52560))})",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0,
+        "51207b56ea61956475f5751c4da934cd2ac20d3088f327c60ffe249bc7a66b9952b0",
+        "", VARS_STD
     },
 #ifdef BUILD_ELEMENTS
     /* Elements/Confidential descriptors */
@@ -1400,10 +1430,6 @@ static const struct descriptor_test {
         "tr()",
         WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
-        "descriptor - tr - multi-child",
-        "tr(x_only,x_only)", /* FIXME: delete this case when script path is supported */
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
-    },{
         "descriptor - tr - any parent",
         "sh(tr(x_only))",
         WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
@@ -1419,6 +1445,46 @@ static const struct descriptor_test {
         "descriptor - tr - invalid public key",
         "tr(uncompresseduncompressed)",
         WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
+    },{
+        "descriptor - tr - multi() fragment not allowed in tapscript",
+        "tr(x_only,multi(2,key_1,key_2))",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+    },{
+        "descriptor - tr - single element in braces not allowed",
+        "tr(x_only,{pk(key_1)})",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+    },{
+        "descriptor - tr - three elements in braces not allowed",
+        "tr(x_only,{pk(key_1),pk(key_2),pk(key_3)})",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+    },{
+        "descriptor - tr - empty braces not allowed",
+        "tr(x_only,{})",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+    },{
+        "descriptor - tr - wsh() inside tr not allowed",
+        "tr(x_only,wsh(pk(key_1)))",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+    },{
+        "descriptor - tr - tr() inside tr not allowed",
+        "tr(x_only,tr(key_1))",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+    },{
+        "descriptor - tr - wsh() inside taptree leaf not allowed",
+        "tr(x_only,{wsh(pk(key_1)),pk(key_2)})",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+    },{
+        "descriptor - tr - tr() inside taptree leaf not allowed",
+        "tr(x_only,{tr(key_1),pk(key_2)})",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+    },{
+        "descriptor - wsh - tr() inside wsh not allowed",
+        "wsh(and_v(v:pk(key_1),tr(key_2)))",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+    },{
+        "descriptor - multi_a not allowed outside tapscript context",
+        "wsh(multi_a(2,key_1,key_2))",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
     },{
         "descriptor - after - non number child",
         "wsh(after(key_1))",
@@ -2327,6 +2393,16 @@ static const struct address_test {
         "address errchk - Invalid multi-path index",
         "pkh(mainnet_xpub/<0;1>)",
         WALLY_NETWORK_BITCOIN_MAINNET, 0, 2, 0, ADDR("")
+    },{
+        "address - tr - single leaf pk(key_1)",
+        "tr(x_only,pk(key_1))",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0,
+        ADDR("bc1pj5dk4dumwklnpqck86xy5003ewsf9rs8kwewxue9qwahleklsp9sdyja0e")
+    },{
+        "address - tr - unbalanced 3-leaf",
+        "tr(x_only,{pk(key_1),{pk(key_2),pk(key_3)}})",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0,
+        ADDR("bc1prm00d6hkq5tm3q9hcus5x6zqu3wysl600494gjzg58agajhp59rqudfe9j")
     }
 };
 
@@ -2519,6 +2595,7 @@ static bool check_descriptor_to_address(const struct address_test *test)
     return true;
 }
 
+
 int main(void)
 {
     bool tests_ok = true;
@@ -2537,6 +2614,7 @@ int main(void)
             tests_ok = false;
         }
     }
+
 
     wally_cleanup(0);
     return tests_ok ? 0 : 1;
