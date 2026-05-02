@@ -407,11 +407,93 @@ static bool test_tokenize_script(void)
     return ok;
 }
 
+static bool test_decode_pk(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+
+    /* pk_k with a 33-byte compressed pubkey: script = 0x21 <33 bytes> */
+    {
+        unsigned char script[34];
+        unsigned char key[33];
+        script[0] = 0x21;
+        memset(key, 0x02, 33); /* fake compressed pubkey */
+        memcpy(script + 1, key, 33);
+        ret = decode_script_to_node(script, 34, 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->data_len == 33);
+        CHECK(memcmp(output->data, key, 33) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* pk_k with a 65-byte uncompressed pubkey: script = 0x41 <65 bytes> */
+    {
+        unsigned char script[66];
+        unsigned char key[65];
+        script[0] = 0x41;
+        key[0] = 0x04;
+        memset(key + 1, 0xab, 64);
+        memcpy(script + 1, key, 65);
+        ret = decode_script_to_node(script, 66, 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->data_len == 65);
+        CHECK(memcmp(output->data, key, 65) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* pk_k with a 32-byte x-only pubkey: script = 0x20 <32 bytes> */
+    {
+        unsigned char script[33];
+        unsigned char key[32];
+        script[0] = 0x20;
+        memset(key, 0xcd, 32);
+        memcpy(script + 1, key, 32);
+        ret = decode_script_to_node(script, 33, 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->data_len == 32);
+        CHECK(memcmp(output->data, key, 32) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* pk_h: DUP HASH160 <20-byte-hash> EQUALVERIFY
+     * script = OP_DUP OP_HASH160 0x14 <20 bytes> OP_EQUALVERIFY */
+    {
+        unsigned char script[25];
+        unsigned char hash[20];
+        memset(hash, 0x77, 20);
+        script[0] = OP_DUP;
+        script[1] = OP_HASH160;
+        script[2] = 0x14;
+        memcpy(script + 3, hash, 20);
+        script[23] = OP_EQUALVERIFY;
+        ret = decode_script_to_node(script, 24, 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_PK_H);
+        CHECK(output->data_len == 20);
+        CHECK(memcmp(output->data, hash, 20) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    return ok;
+}
+
 int main(void)
 {
     bool ok = true;
     if (!test_tokenize_script()) {
         printf("[test_tokenize_script] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_pk()) {
+        printf("[test_decode_pk] failed!\n");
         ok = false;
     }
     wally_cleanup(0);

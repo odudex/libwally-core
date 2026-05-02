@@ -476,10 +476,65 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
     while (nonterm_stack_pop(nonterm, &cur)) {
         switch (cur.kind) {
 
-        case NT_EXPRESSION:
-            /* TODO: phases 12–26 fill in token dispatch here */
+        case NT_EXPRESSION: {
+            const token_t *tok = tk_cursor_peek(&cursor);
+            if (!tok) { ret = WALLY_EINVAL; goto cleanup; }
+
+            if (tok->kind == TK_BYTES33 || tok->kind == TK_BYTES65 || tok->kind == TK_BYTES32) {
+                /* pk_k: single key push (tokens right-to-left: BYTES33/BYTES65/BYTES32) */
+                const unsigned char *key_bytes;
+                size_t key_len;
+                unsigned char *buf;
+                ms_node *n;
+                tok = tk_cursor_next(&cursor);
+                if (tok->kind == TK_BYTES33) {
+                    key_bytes = tok->data.bytes33; key_len = 33;
+                } else if (tok->kind == TK_BYTES65) {
+                    key_bytes = tok->data.bytes65; key_len = 65;
+                } else {
+                    key_bytes = tok->data.bytes32; key_len = 32;
+                }
+                n = node_alloc(KIND_MINISCRIPT_PK_K);
+                if (!n) { ret = WALLY_ENOMEM; goto cleanup; }
+                buf = wally_malloc(key_len);
+                if (!buf) { ms_node_free(n); ret = WALLY_ENOMEM; goto cleanup; }
+                memcpy(buf, key_bytes, key_len);
+                n->data = (const char *)buf;
+                n->data_len = (uint32_t)key_len;
+                ret = terminal_stack_push(term, n);
+                if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
+                break;
+            } else if (tok->kind == TK_VERIFY) {
+                /* pk_h: DUP HASH160 <hash20> EQUALVERIFY
+                 * tokens right-to-left: VERIFY, EQUAL, HASH20, HASH160, DUP */
+                unsigned char hash20[20];
+                const token_t *t2;
+                unsigned char *buf;
+                ms_node *n;
+                tk_cursor_next(&cursor); /* consume TK_VERIFY */
+                t2 = tk_cursor_next(&cursor);
+                if (!t2 || t2->kind != TK_EQUAL) { ret = WALLY_EINVAL; goto cleanup; }
+                t2 = tk_cursor_next(&cursor);
+                if (!t2 || t2->kind != TK_HASH20) { ret = WALLY_EINVAL; goto cleanup; }
+                memcpy(hash20, t2->data.hash20, 20);
+                t2 = tk_cursor_next(&cursor);
+                if (!t2 || t2->kind != TK_HASH160) { ret = WALLY_EINVAL; goto cleanup; }
+                t2 = tk_cursor_next(&cursor);
+                if (!t2 || t2->kind != TK_DUP) { ret = WALLY_EINVAL; goto cleanup; }
+                n = node_alloc(KIND_MINISCRIPT_PK_H);
+                if (!n) { ret = WALLY_ENOMEM; goto cleanup; }
+                buf = wally_malloc(20);
+                if (!buf) { ms_node_free(n); ret = WALLY_ENOMEM; goto cleanup; }
+                memcpy(buf, hash20, 20);
+                n->data = (const char *)buf;
+                n->data_len = 20;
+                ret = terminal_stack_push(term, n);
+                if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
+                break;
+            }
             ret = WALLY_EINVAL;
             goto cleanup;
+        }
 
         case NT_MAYBE_AND_V:
             if (is_and_v(&cursor)) {
