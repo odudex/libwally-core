@@ -408,6 +408,71 @@ WALLY_CORE_API int wally_descriptor_to_addresses(
     char **output,
     size_t num_outputs);
 
+WALLY_CORE_API int wally_descriptor_get_taproot_num_leaves(
+    const struct wally_descriptor *descriptor,
+    uint32_t *value_out);
+
+/**
+ * Get the x-only internal key of a tr() descriptor.
+ *
+ * :param descriptor: Parsed tr() output descriptor.
+ * :param variant: See `wally_descriptor_get_num_variants`.
+ * :param multi_index: See `wally_descriptor_get_num_paths`.
+ * :param child_num: BIP32 child number, or 0 for static descriptors.
+ * :param flags: For future use. Must be 0.
+ * :param bytes_out: Destination for the 32-byte x-only internal key.
+ * :param len: Length of ``bytes_out``. Must be at least 32.
+ */
+WALLY_CORE_API int wally_descriptor_get_taproot_internal_key(
+    const struct wally_descriptor *descriptor,
+    uint32_t variant,
+    uint32_t multi_index,
+    uint32_t child_num,
+    uint32_t flags,
+    unsigned char *bytes_out,
+    size_t len);
+
+/**
+ * Get the derived x-only public key for a descriptor-level key at a given derivation index.
+ *
+ * :param descriptor: Parsed output descriptor.
+ * :param key_index: Descriptor-level key index (from `wally_descriptor_get_taproot_leaf_key_index`).
+ * :param variant: See `wally_descriptor_get_num_variants`.
+ * :param multi_index: See `wally_descriptor_get_num_paths`.
+ * :param child_num: BIP32 child number for ranged keys, or 0 for static keys.
+ * :param flags: For future use. Must be 0.
+ * :param bytes_out: Destination for the 32-byte x-only public key.
+ * :param len: Length of ``bytes_out``. Must be at least 32.
+ */
+WALLY_CORE_API int wally_descriptor_get_key_xonly_public_key(
+    const struct wally_descriptor *descriptor,
+    size_t key_index,
+    uint32_t variant,
+    uint32_t multi_index,
+    uint32_t child_num,
+    uint32_t flags,
+    unsigned char *bytes_out,
+    size_t len);
+
+/**
+ * Get the merkle root of the taptree in a tr() descriptor.
+ *
+ * :param descriptor: Parsed tr() output descriptor.
+ * :param variant: See `wally_descriptor_get_num_variants`.
+ * :param multi_index: See `wally_descriptor_get_num_paths`.
+ * :param child_num: BIP32 child number, or 0 for static descriptors.
+ * :param flags: For future use. Must be 0.
+ * :param bytes_out: Destination for the 32-byte merkle root.
+ * :param len: Length of ``bytes_out``. Must be at least 32.
+ */
+WALLY_CORE_API int wally_descriptor_get_taproot_merkle_root(
+    const struct wally_descriptor *descriptor,
+    uint32_t variant,
+    uint32_t multi_index,
+    uint32_t child_num,
+    uint32_t flags,
+    unsigned char *bytes_out,
+    size_t len);
 
 #ifdef __cplusplus
 }

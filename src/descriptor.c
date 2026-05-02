@@ -4164,3 +4164,151 @@ static int ensure_unique_policy_keys(const ms_ctx *ctx)
     }
     return WALLY_OK;
 }
+
+int wally_descriptor_get_taproot_num_leaves(
+    const struct wally_descriptor *descriptor,
+    uint32_t *value_out)
+{
+    if (value_out)
+        *value_out = 0;
+    if (!descriptor || !value_out)
+        return WALLY_EINVAL;
+    if (descriptor->top_node->kind != KIND_DESCRIPTOR_TR)
+        return WALLY_EINVAL;
+    if (!descriptor->top_node->child)
+        return WALLY_ERROR; /* tr() with no internal key — corrupt AST */
+    if (!descriptor->top_node->child->next)
+        return WALLY_OK; /* key-only tr(KEY), 0 leaves */
+    *value_out = count_taptree_leaves(descriptor->top_node->child->next);
+    return WALLY_OK;
+}
+
+int wally_descriptor_get_taproot_internal_key(
+    const struct wally_descriptor *descriptor,
+    uint32_t variant, uint32_t multi_index, uint32_t child_num, uint32_t flags,
+    unsigned char *bytes_out, size_t len)
+{
+    ms_ctx ctx;
+    unsigned char pubkey[EC_XONLY_PUBLIC_KEY_LEN + 1]; /* PUSH_32 + x-only key */
+    size_t pubkey_len = 0;
+    int ret;
+
+    if (!descriptor || !bytes_out || len < EC_XONLY_PUBLIC_KEY_LEN || flags)
+        return WALLY_EINVAL;
+    if (descriptor->top_node->kind != KIND_DESCRIPTOR_TR ||
+        variant >= descriptor->num_variants ||
+        child_num >= BIP32_INITIAL_HARDENED_CHILD ||
+        multi_index >= descriptor->num_multipaths)
+        return WALLY_EINVAL;
+
+    if (!descriptor->top_node->child)
+        return WALLY_ERROR; /* tr() with no internal key — corrupt AST */
+
+    memcpy(&ctx, descriptor, sizeof(ctx));
+    ctx.variant = variant;
+    ctx.child_num = child_num;
+    ctx.multi_index = multi_index;
+    ctx.path_buff = NULL;
+    if (ctx.max_path_elems &&
+        !(ctx.path_buff = wally_malloc(ctx.max_path_elems * sizeof(uint32_t))))
+        return WALLY_ENOMEM;
+
+    ret = generate_script(&ctx, descriptor->top_node->child, pubkey, sizeof(pubkey),
+                          &pubkey_len);
+    wally_free(ctx.path_buff);
+
+    if (ret == WALLY_OK) {
+        if (pubkey_len == EC_XONLY_PUBLIC_KEY_LEN) {
+            memcpy(bytes_out, pubkey, EC_XONLY_PUBLIC_KEY_LEN);
+        } else if (pubkey_len == EC_PUBLIC_KEY_LEN) {
+            /* Compressed key: strip the parity byte */
+            memcpy(bytes_out, pubkey + 1, EC_XONLY_PUBLIC_KEY_LEN);
+        } else {
+            ret = WALLY_EINVAL;
+        }
+    }
+    return ret;
+}
+
+int wally_descriptor_get_key_xonly_public_key(
+    const struct wally_descriptor *descriptor,
+    size_t key_index,
+    uint32_t variant, uint32_t multi_index, uint32_t child_num, uint32_t flags,
+    unsigned char *bytes_out, size_t len)
+{
+    const ms_node *key_node;
+    ms_ctx ctx;
+    unsigned char pubkey[EC_PUBLIC_KEY_LEN];
+    size_t written = 0;
+    int ret;
+
+    if (!descriptor || !bytes_out || len < EC_XONLY_PUBLIC_KEY_LEN || flags)
+        return WALLY_EINVAL;
+    if (variant >= descriptor->num_variants ||
+        child_num >= BIP32_INITIAL_HARDENED_CHILD ||
+        multi_index >= descriptor->num_multipaths)
+        return WALLY_EINVAL;
+    if (!(key_node = descriptor_get_key(descriptor, key_index)))
+        return WALLY_EINVAL;
+
+    memcpy(&ctx, descriptor, sizeof(ctx));
+    ctx.variant = variant;
+    ctx.child_num = child_num;
+    ctx.multi_index = multi_index;
+    ctx.path_buff = NULL;
+    if (ctx.max_path_elems &&
+        !(ctx.path_buff = wally_malloc(ctx.max_path_elems * sizeof(uint32_t))))
+        return WALLY_ENOMEM;
+
+    /* Generate the pubkey for this key node */
+    ret = generate_script(&ctx, (ms_node *)key_node, pubkey, sizeof(pubkey), &written);
+    wally_free(ctx.path_buff);
+
+    if (ret == WALLY_OK) {
+        if (written == EC_XONLY_PUBLIC_KEY_LEN) {
+            memcpy(bytes_out, pubkey, EC_XONLY_PUBLIC_KEY_LEN);
+        } else if (written == EC_PUBLIC_KEY_LEN) {
+            /* Compressed key: strip the parity byte */
+            memcpy(bytes_out, pubkey + 1, EC_XONLY_PUBLIC_KEY_LEN);
+        } else {
+            ret = WALLY_EINVAL;
+        }
+    }
+    return ret;
+}
+
+int wally_descriptor_get_taproot_merkle_root(
+    const struct wally_descriptor *descriptor,
+    uint32_t variant, uint32_t multi_index, uint32_t child_num, uint32_t flags,
+    unsigned char *bytes_out, size_t len)
+{
+    ms_ctx ctx;
+    ms_node *taptree;
+    int ret;
+
+    if (!descriptor || !bytes_out || len < SHA256_LEN || flags)
+        return WALLY_EINVAL;
+    if (descriptor->top_node->kind != KIND_DESCRIPTOR_TR ||
+        variant >= descriptor->num_variants ||
+        child_num >= BIP32_INITIAL_HARDENED_CHILD ||
+        multi_index >= descriptor->num_multipaths)
+        return WALLY_EINVAL;
+    if (!descriptor->top_node->child)
+        return WALLY_ERROR; /* tr() with no internal key — corrupt AST */
+    taptree = descriptor->top_node->child->next;
+    if (!taptree)
+        return WALLY_EINVAL; /* key-only tr() has no merkle root */
+
+    memcpy(&ctx, descriptor, sizeof(ctx));
+    ctx.variant = variant;
+    ctx.child_num = child_num;
+    ctx.multi_index = multi_index;
+    ctx.path_buff = NULL;
+    if (ctx.max_path_elems &&
+        !(ctx.path_buff = wally_malloc(ctx.max_path_elems * sizeof(uint32_t))))
+        return WALLY_ENOMEM;
+
+    ret = compute_taptree_hash(&ctx, taptree, bytes_out);
+    wally_free(ctx.path_buff);
+    return ret;
+}
