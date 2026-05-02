@@ -153,6 +153,7 @@ libwallycore_la_SOURCES = \
     coins.c \
     descriptor.c \
     miniscript_decode.c \
+    miniscript_satisfy.c \
     ecdh.c \
     elements.c \
     blech32.c \
