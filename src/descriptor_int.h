@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /* ms_node kind base values */
 #define KIND_MINISCRIPT 0x01
@@ -41,6 +42,35 @@
 #define KIND_MINISCRIPT_ZERO_NOT_EQUAL (0x11000000 | KIND_MINISCRIPT)
 #define KIND_MINISCRIPT_JUST_0         (0x12000000 | KIND_MINISCRIPT)
 #define KIND_MINISCRIPT_JUST_1         (0x13000000 | KIND_MINISCRIPT)
+
+/* Witness state kinds (maps to Rust Witness<T> enum variants) */
+#define MS_WITNESS_IMPOSSIBLE   0u  /* No valid satisfaction exists */
+#define MS_WITNESS_UNAVAILABLE  1u  /* Missing data; third party may satisfy */
+#define MS_WITNESS_STACK        2u  /* Stack data available */
+
+typedef struct ms_witness_item_t {
+    unsigned char *data;
+    size_t         data_len;
+} ms_witness_item;
+
+typedef struct ms_witness_t {
+    uint32_t         kind;                 /* MS_WITNESS_* constant */
+    ms_witness_item *items;
+    size_t           num_items;
+    size_t           items_allocation_len; /* allocated capacity */
+} ms_witness;
+
+typedef struct ms_satisfaction_t {
+    ms_witness witness;
+    bool       has_sig;           /* true if satisfaction contains a signature */
+    uint32_t   absolute_timelock; /* 0 = absent */
+    uint32_t   relative_timelock; /* 0 = absent */
+} ms_satisfaction;
+
+int  ms_witness_init(ms_witness *w, uint32_t kind);
+void ms_witness_free(ms_witness *w);
+int  ms_satisfaction_init(ms_satisfaction *s, uint32_t witness_kind);
+void ms_satisfaction_free(ms_satisfaction *s);
 
 /* A node in a parsed miniscript expression */
 typedef struct ms_node_t {
