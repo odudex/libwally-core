@@ -119,7 +119,7 @@ ms_satisfaction satisfaction_best(ms_satisfaction a, ms_satisfaction b)
 }
 
 /* Clone a satisfaction, deep-copying witness item data. On OOM returns IMPOSSIBLE. */
-static ms_satisfaction ms_satisfaction_clone(const ms_satisfaction *src)
+ms_satisfaction ms_satisfaction_clone(const ms_satisfaction *src)
 {
     ms_satisfaction result;
     ms_satisfaction_init(&result, src->witness.kind);
@@ -568,4 +568,278 @@ void satisfaction_thresh(size_t k, size_t n,
     *sat_out = sat_acc;
 
     wally_free(indices);
+}
+
+typedef struct {
+    ms_satisfaction sat;
+    ms_satisfaction dissat;
+} sat_dissat_t;
+
+static size_t ms_node_count(const ms_node *node)
+{
+    size_t n = 0;
+    for (; node; node = node->next)
+        n += 1 + ms_node_count(node->child);
+    return n;
+}
+
+typedef struct {
+    const ms_node *node;
+    const ms_node *cur_child;
+} trav_frame_t;
+
+void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
+                  bool malleable,
+                  ms_satisfaction *sat_out, ms_satisfaction *dissat_out)
+{
+    size_t cap = ms_node_count(node);
+    if (!cap) {
+        ms_satisfaction_init(sat_out,    MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_init(dissat_out, MS_WITNESS_IMPOSSIBLE);
+        return;
+    }
+
+    trav_frame_t  *trav   = wally_malloc(cap * sizeof(trav_frame_t));
+    sat_dissat_t  *result = wally_malloc(cap * sizeof(sat_dissat_t));
+    if (!trav || !result) {
+        wally_free(trav); wally_free(result);
+        ms_satisfaction_init(sat_out,    MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_init(dissat_out, MS_WITNESS_IMPOSSIBLE);
+        return;
+    }
+
+    size_t tsp = 0;
+    size_t rsp = 0;
+
+    trav[tsp++] = (trav_frame_t){ node, node->child };
+
+    while (tsp > 0) {
+        trav_frame_t *top = &trav[tsp - 1];
+
+        if (top->cur_child) {
+            const ms_node *child = top->cur_child;
+            top->cur_child = child->next;
+            trav[tsp++] = (trav_frame_t){ child, child->child };
+            continue;
+        }
+
+        const ms_node *n = top->node;
+        tsp--;
+
+        sat_dissat_t entry;
+        ms_satisfaction_init(&entry.sat,    MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
+
+        static const unsigned char push_1[] = {0x01};
+
+        switch (n->kind) {
+
+        case KIND_MINISCRIPT_JUST_0:
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            ms_satisfaction_init(&entry.sat,    MS_WITNESS_IMPOSSIBLE);
+            ms_satisfaction_init(&entry.dissat, MS_WITNESS_STACK);
+            break;
+
+        case KIND_MINISCRIPT_JUST_1:
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            ms_satisfaction_init(&entry.sat,    MS_WITNESS_STACK);
+            ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
+            break;
+
+        case KIND_MINISCRIPT_PK_K:
+        case KIND_MINISCRIPT_PK_H:
+        case KIND_MINISCRIPT_PK:
+        case KIND_MINISCRIPT_PKH:
+        case KIND_MINISCRIPT_OLDER:
+        case KIND_MINISCRIPT_AFTER:
+        case KIND_MINISCRIPT_SHA256:
+        case KIND_MINISCRIPT_HASH256:
+        case KIND_MINISCRIPT_RIPEMD160:
+        case KIND_MINISCRIPT_HASH160:
+        case KIND_MINISCRIPT_MULTI:
+        case KIND_MINISCRIPT_MULTI_A:
+        case KIND_MINISCRIPT_MULTI_A_S:
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            ms_satisfaction_init(&entry.sat,    MS_WITNESS_UNAVAILABLE);
+            ms_satisfaction_init(&entry.dissat, MS_WITNESS_UNAVAILABLE);
+            break;
+
+        case KIND_MINISCRIPT_ALT:
+        case KIND_MINISCRIPT_SWAP:
+        case KIND_MINISCRIPT_CHECK:
+        case KIND_MINISCRIPT_ZERO_NOT_EQUAL: {
+            sat_dissat_t child = result[--rsp];
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            entry = child;
+            break;
+        }
+
+        case KIND_MINISCRIPT_DUP_IF: {
+            sat_dissat_t child = result[--rsp];
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            ms_satisfaction_free(&child.dissat);
+            ms_satisfaction_init(&child.dissat, MS_WITNESS_STACK);
+            entry.dissat = satisfaction_push_item(child.dissat, NULL, 0);
+            entry.sat    = satisfaction_push_item(child.sat, push_1, 1);
+            break;
+        }
+
+        case KIND_MINISCRIPT_VERIFY: {
+            sat_dissat_t child = result[--rsp];
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            ms_satisfaction_free(&child.dissat);
+            ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
+            entry.sat = child.sat;
+            break;
+        }
+
+        case KIND_MINISCRIPT_NON_ZERO: {
+            sat_dissat_t child = result[--rsp];
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            ms_satisfaction_free(&child.dissat);
+            ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
+            entry.sat = child.sat;
+            break;
+        }
+
+        case KIND_MINISCRIPT_AND_B: {
+            sat_dissat_t r = result[--rsp];
+            sat_dissat_t l = result[--rsp];
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            entry.sat    = satisfaction_concat(r.sat,    l.sat);
+            entry.dissat = satisfaction_concat(r.dissat, l.dissat);
+            break;
+        }
+
+        case KIND_MINISCRIPT_AND_V: {
+            sat_dissat_t r = result[--rsp];
+            sat_dissat_t l = result[--rsp];
+            ms_satisfaction l_sat_clone = ms_satisfaction_clone(&l.sat);
+            ms_satisfaction_free(&l.dissat);
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            entry.sat    = satisfaction_concat(r.sat,    l.sat);
+            entry.dissat = satisfaction_concat(r.dissat, l_sat_clone);
+            break;
+        }
+
+        case KIND_MINISCRIPT_AND_N: {
+            sat_dissat_t y = result[--rsp];
+            sat_dissat_t x = result[--rsp];
+            ms_satisfaction_free(&y.dissat);
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            entry.sat    = satisfaction_concat(y.sat, x.sat);
+            entry.dissat = x.dissat;
+            break;
+        }
+
+        case KIND_MINISCRIPT_ANDOR: {
+            sat_dissat_t z = result[--rsp];
+            sat_dissat_t y = result[--rsp];
+            sat_dissat_t x = result[--rsp];
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            satisfaction_andor(x.sat, x.dissat, y.sat, y.dissat,
+                               z.sat, z.dissat,
+                               &entry.sat, &entry.dissat);
+            break;
+        }
+
+        case KIND_MINISCRIPT_OR_B: {
+            sat_dissat_t r = result[--rsp];
+            sat_dissat_t l = result[--rsp];
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            satisfaction_or_b(l.sat, l.dissat, r.sat, r.dissat,
+                              &entry.sat, &entry.dissat);
+            break;
+        }
+
+        case KIND_MINISCRIPT_OR_C: {
+            sat_dissat_t r = result[--rsp];
+            sat_dissat_t l = result[--rsp];
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            satisfaction_or_c(l.sat, l.dissat, r.sat, r.dissat,
+                              &entry.sat, &entry.dissat);
+            break;
+        }
+
+        case KIND_MINISCRIPT_OR_D: {
+            sat_dissat_t r = result[--rsp];
+            sat_dissat_t l = result[--rsp];
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            satisfaction_or_d(l.sat, l.dissat, r.sat, r.dissat,
+                              &entry.sat, &entry.dissat);
+            break;
+        }
+
+        case KIND_MINISCRIPT_OR_I: {
+            sat_dissat_t r = result[--rsp];
+            sat_dissat_t l = result[--rsp];
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            satisfaction_or_i(l.sat, l.dissat, r.sat, r.dissat,
+                              &entry.sat, &entry.dissat);
+            break;
+        }
+
+        case KIND_MINISCRIPT_THRESH: {
+            size_t child_n = 0;
+            for (const ms_node *c = n->child; c; c = c->next) child_n++;
+            size_t k = (size_t)n->number;
+
+            ms_satisfaction *sats    = wally_malloc(child_n * sizeof(ms_satisfaction));
+            ms_satisfaction *dissats = wally_malloc(child_n * sizeof(ms_satisfaction));
+            if (!sats || !dissats) {
+                wally_free(sats); wally_free(dissats);
+                for (size_t i = 0; i < child_n; i++) {
+                    rsp--;
+                    ms_satisfaction_free(&result[rsp].sat);
+                    ms_satisfaction_free(&result[rsp].dissat);
+                }
+                ms_satisfaction_free(&entry.sat);
+                ms_satisfaction_free(&entry.dissat);
+                ms_satisfaction_init(&entry.sat,    MS_WITNESS_IMPOSSIBLE);
+                ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
+                break;
+            }
+            for (size_t i = child_n; i-- > 0; ) {
+                sat_dissat_t sd = result[--rsp];
+                sats[i]    = sd.sat;
+                dissats[i] = sd.dissat;
+            }
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            if (malleable)
+                satisfaction_thresh_mall(k, child_n, sats, dissats, &entry.sat, &entry.dissat);
+            else
+                satisfaction_thresh(k, child_n, sats, dissats, &entry.sat, &entry.dissat);
+            wally_free(sats);
+            wally_free(dissats);
+            break;
+        }
+
+        default:
+            break;
+        }
+
+        result[rsp++] = entry;
+    }
+
+    *sat_out    = result[0].sat;
+    *dissat_out = result[0].dissat;
+
+    wally_free(trav);
+    wally_free(result);
 }

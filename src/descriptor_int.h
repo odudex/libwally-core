@@ -99,6 +99,34 @@ void satisfaction_thresh_mall(size_t k, size_t n,
                               ms_satisfaction *sat_out,
                               ms_satisfaction *dissat_out);
 
+ms_satisfaction ms_satisfaction_clone(const ms_satisfaction *src);
+
+/* Hash type constants for lookup_preimage */
+#define MS_HASH_SHA256    0u
+#define MS_HASH_HASH256   1u
+#define MS_HASH_RIPEMD160 2u
+#define MS_HASH_HASH160   3u
+
+/* Asset provider for satisfy_node. Mirrors rust-miniscript AssetProvider. */
+typedef struct ms_satisfier_t {
+    /* Write a DER/Schnorr sig into sig_out; set *sig_len_out. Return true if available. */
+    bool (*lookup_sig)(const struct ms_satisfier_t *stfr,
+                       const unsigned char *pk, size_t pk_len,
+                       unsigned char *sig_out, size_t *sig_len_out);
+    /* Write the 32-byte preimage of hash into preimage_out. hash_type = MS_HASH_*. */
+    bool (*lookup_preimage)(const struct ms_satisfier_t *stfr,
+                            const unsigned char *hash, size_t hash_len,
+                            uint32_t hash_type,
+                            unsigned char preimage_out[32]);
+    /* Return true if relative locktime lock is satisfied. */
+    bool (*check_older)(const struct ms_satisfier_t *stfr, uint32_t lock);
+    /* Return true if absolute locktime lock is satisfied. */
+    bool (*check_after)(const struct ms_satisfier_t *stfr, uint32_t lock);
+    /* 32-byte taproot leaf hash; NULL for segwit v0. */
+    const unsigned char *leaf_hash;
+    void *user_data;
+} ms_satisfier;
+
 /* A node in a parsed miniscript expression */
 typedef struct ms_node_t {
     struct ms_node_t *next;
@@ -134,5 +162,9 @@ struct ms_builtin_t {
 };
 
 extern const struct ms_builtin_t g_builtins[];
+
+void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
+                  bool malleable,
+                  ms_satisfaction *sat_out, ms_satisfaction *dissat_out);
 
 #endif /* WALLY_DESCRIPTOR_INT_H */
