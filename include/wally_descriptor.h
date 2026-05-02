@@ -12,29 +12,31 @@ struct wally_map;
 struct wally_descriptor;
 
 /*** miniscript-flags Miniscript/Descriptor parsing flags */
-#define WALLY_MINISCRIPT_TAPSCRIPT        0x01 /** Tapscript, use x-only pubkeys */
-#define WALLY_MINISCRIPT_ONLY             0x02 /** Only allow miniscript (not descriptor) expressions */
-#define WALLY_MINISCRIPT_REQUIRE_CHECKSUM 0x04 /** Require a checksum to be present */
-#define WALLY_MINISCRIPT_POLICY_TEMPLATE  0x08 /** Only allow policy templates with @n BIP32 keys */
-#define WALLY_MINISCRIPT_UNIQUE_KEYPATHS  0x10 /** For policy templates, ensure BIP32 derivation paths differ for identical keys */
-#define WALLY_MINISCRIPT_AS_ELEMENTS      0x20 /** Treat non-elements expressions as elements, e.g. tr() as eltr() */
-#define WALLY_MINISCRIPT_DEPTH_MASK       0xffff0000 /** Mask for limiting maximum depth */
-#define WALLY_MINISCRIPT_DEPTH_SHIFT      16 /** Shift to convert maximum depth to flags */
+#define WALLY_MINISCRIPT_TAPSCRIPT         0x01 /** Tapscript, use x-only pubkeys */
+#define WALLY_MINISCRIPT_ONLY              0x02 /** Only allow miniscript (not descriptor) expressions */
+#define WALLY_MINISCRIPT_REQUIRE_CHECKSUM  0x04 /** Require a checksum to be present */
+#define WALLY_MINISCRIPT_POLICY_TEMPLATE   0x08 /** Only allow policy templates with @n BIP32 keys */
+#define WALLY_MINISCRIPT_UNIQUE_KEYPATHS   0x10 /** For policy templates, ensure BIP32 derivation paths differ for identical keys */
+#define WALLY_MINISCRIPT_AS_ELEMENTS       0x20 /** Treat non-elements expressions as elements, e.g. tr() as eltr() */
+#define WALLY_MINISCRIPT_DEPTH_MASK        0xffff0000 /** Mask for limiting maximum depth */
+#define WALLY_MINISCRIPT_DEPTH_SHIFT       16 /** Shift to convert maximum depth to flags */
+#define WALLY_DESCRIPTOR_TAPTREE_MAX_DEPTH 128 /** BIP-341: maximum taptree depth */
 
 /*** miniscript-features Miniscript/Descriptor feature flags */
-#define WALLY_MS_IS_RANGED        0x001 /** Allows key ranges via ``*`` */
-#define WALLY_MS_IS_MULTIPATH     0x002 /** Allows multiple paths via ``<a;b;c>`` */
-#define WALLY_MS_IS_PRIVATE       0x004 /** Contains at least one private key */
-#define WALLY_MS_IS_UNCOMPRESSED  0x008 /** Contains at least one uncompressed key */
-#define WALLY_MS_IS_RAW           0x010 /** Contains at least one raw key */
-#define WALLY_MS_IS_DESCRIPTOR    0x020 /** Contains only descriptor expressions (no miniscript) */
-#define WALLY_MS_IS_X_ONLY        0x040 /** Contains at least one x-only key */
-#define WALLY_MS_IS_PARENTED      0x080 /** Contains at least one key key with a parent key origin */
-#define WALLY_MS_IS_ELEMENTS      0x100 /** Contains Elements expressions or was parsed as Elements */
-#define WALLY_MS_IS_SLIP77        0x200 /** A confidential ct() descriptor with SLIP-77 blinding */
-#define WALLY_MS_IS_ELIP150       0x400 /** A confidential ct() descriptor with ELIP-150 blinding */
-#define WALLY_MS_IS_ELIP151       0x800 /** A confidential ct() descriptor with ELIP-151 blinding */
-#define WALLY_MS_ANY_BLINDING_KEY 0xE00 /** SLIP-77, ELIP-150 or ELIP-151 blinding key present */
+#define WALLY_MS_IS_RANGED        0x0001 /** Allows key ranges via ``*`` */
+#define WALLY_MS_IS_MULTIPATH     0x0002 /** Allows multiple paths via ``<a;b;c>`` */
+#define WALLY_MS_IS_PRIVATE       0x0004 /** Contains at least one private key */
+#define WALLY_MS_IS_UNCOMPRESSED  0x0008 /** Contains at least one uncompressed key */
+#define WALLY_MS_IS_RAW           0x0010 /** Contains at least one raw key */
+#define WALLY_MS_IS_DESCRIPTOR    0x0020 /** Contains only descriptor expressions (no miniscript) */
+#define WALLY_MS_IS_X_ONLY        0x0040 /** Contains at least one x-only key */
+#define WALLY_MS_IS_PARENTED      0x0080 /** Contains at least one key key with a parent key origin */
+#define WALLY_MS_IS_ELEMENTS      0x0100 /** Contains Elements expressions or was parsed as Elements */
+#define WALLY_MS_IS_SLIP77        0x0200 /** A confidential ct() descriptor with SLIP-77 blinding */
+#define WALLY_MS_IS_ELIP150       0x0400 /** A confidential ct() descriptor with ELIP-150 blinding */
+#define WALLY_MS_IS_ELIP151       0x0800 /** A confidential ct() descriptor with ELIP-151 blinding */
+#define WALLY_MS_IS_TAPSCRIPT     0x1000 /** Node is inside tapscript context (internal) */
+#define WALLY_MS_ANY_BLINDING_KEY 0x0E00 /** SLIP-77, ELIP-150 or ELIP-151 blinding key present */
 
 /*** ms-canonicalization-flags Miniscript/Descriptor canonicalization flags */
 #define WALLY_MS_CANONICAL_NO_CHECKSUM 0x01 /** Do not include a checksum */
@@ -405,6 +407,7 @@ WALLY_CORE_API int wally_descriptor_to_addresses(
     uint32_t flags,
     char **output,
     size_t num_outputs);
+
 
 #ifdef __cplusplus
 }

@@ -173,6 +173,8 @@ extern "C" {
 #define OP_NOP9 0xb8
 #define OP_NOP10 0xb9
 
+#define OP_CHECKSIGADD 0xba /* BIP-342 tapscript */
+
 #define OP_INVALIDOPCODE 0xff
 #endif  /* WALLY_DISABLE_OP_CODE */
 

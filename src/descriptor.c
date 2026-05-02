@@ -73,6 +73,7 @@
 
 #define DESCRIPTOR_MIN_SIZE     20
 #define MINISCRIPT_MULTI_MAX    20
+#define MULTI_A_NUM_KEYS_MAX    999 /* BIP-342: stack limited to 1000 elements, one used by the threshold */
 #define REDEEM_SCRIPT_MAX_SIZE  520
 #define WITNESS_SCRIPT_MAX_SIZE 10000
 #define DESCRIPTOR_SEQUENCE_LOCKTIME_TYPE_FLAG 0x00400000
@@ -117,6 +118,9 @@
 #define KIND_MINISCRIPT_OR_C      (0x06000000 | KIND_MINISCRIPT)
 #define KIND_MINISCRIPT_OR_D      (0x07000000 | KIND_MINISCRIPT)
 #define KIND_MINISCRIPT_OR_I      (0x08000000 | KIND_MINISCRIPT)
+#define KIND_MINISCRIPT_MULTI_A   (0x09000000 | KIND_MINISCRIPT)
+#define KIND_MINISCRIPT_MULTI_A_S (0x0A000000 | KIND_MINISCRIPT)
+#define KIND_TAPTREE_BRANCH       0x40
 
 struct addr_ver_t {
     const unsigned char network;
@@ -728,6 +732,9 @@ static int verify_multi(ms_ctx *ctx, ms_node *node)
     const int64_t count = node_get_child_count(node);
     ms_node *top, *key;
 
+    if (node->flags & WALLY_MS_IS_TAPSCRIPT)
+        return WALLY_EINVAL; /* Use multi_a/sortedmulti_a inside tapscript */
+
     if (count < 2 || count - 1 > MINISCRIPT_MULTI_MAX)
         return WALLY_EINVAL;
 
@@ -743,6 +750,43 @@ static int verify_multi(ms_ctx *ctx, ms_node *node)
         key = key->next;
     }
 
+    node->type_properties = builtin_get(node)->type_properties;
+    return WALLY_OK;
+}
+
+static int verify_multi_a(ms_ctx *ctx, ms_node *node)
+{
+    (void)ctx;
+    const int64_t count = node_get_child_count(node);
+    ms_node *top, *key;
+    /* multi_a only valid inside tapscript */
+    if (!(node->flags & WALLY_MS_IS_TAPSCRIPT))
+        return WALLY_EINVAL;
+
+    /* at least threshold + 1 key */
+    if (count < 2 || count - 1 > MULTI_A_NUM_KEYS_MAX)
+        return WALLY_EINVAL;
+
+    top = node->child;
+    if (
+        /* top should never be NULL as there is at least 2 elements */
+        !top ||!top->next ||
+        /* threshold must be a plain value */
+        top->builtin || top->kind != KIND_NUMBER ||
+        /* threshold must be at least 1 */
+        top->number <= 0 ||
+        /* threshold must be <= key count */
+        count - 1 < top->number
+    )
+        return WALLY_EINVAL;
+
+    key = top->next;
+    while (key) {
+        /* only bare key allowed */
+        if (key->builtin || !(key->kind & KIND_KEY))
+            return WALLY_EINVAL;
+        key = key->next;
+    }
     node->type_properties = builtin_get(node)->type_properties;
     return WALLY_OK;
 }
@@ -1171,6 +1215,9 @@ static int node_verify_wrappers(ms_node *node)
                 *properties &= ~PROP_F;
                 *properties |= PROP_E;
             }
+            /* tapscript: d: gains u property */
+            if (node->flags & WALLY_MS_IS_TAPSCRIPT)
+                *properties |= PROP_U;
             break;
         case 'v':
             PROP_REQUIRE(TYPE_B);
@@ -1350,7 +1397,9 @@ static int generate_sh_wsh(ms_ctx *ctx, ms_node *node,
 static int generate_inplace_checksig(unsigned char *script, size_t script_len,
                                      size_t *written)
 {
-    if (!*written || (*written + 1 > WITNESS_SCRIPT_MAX_SIZE))
+    /* Witness script size limit enforced in generate_inplace_wrappers() for
+     * segwit v0 only; tapscript has no script size restriction. */
+    if (!*written)
         return WALLY_EINVAL;
 
     *written += 1;
@@ -1502,6 +1551,76 @@ static int generate_multi(ms_ctx *ctx, ms_node *node,
                     return WALLY_EINVAL;
                 if (*written <= script_len)
                     script[*written - 1] = OP_CHECKMULTISIG;
+            }
+        }
+    }
+    wally_free(sorted);
+    return ret;
+}
+
+static int generate_multi_a(ms_ctx *ctx, ms_node *node,
+                             unsigned char *script, size_t script_len, size_t *written)
+{
+    /* Emit: <K1> OP_CHECKSIG <K2> OP_CHECKSIGADD ... <Kn> OP_CHECKSIGADD <k> OP_NUMEQUAL */
+    size_t offset = 0;
+    uint32_t count, i;
+    ms_node *child = node->child;
+    struct multisig_sort_data_t *sorted = NULL;
+    int ret = WALLY_OK;
+
+    if (!child || !node->builtin)
+        return WALLY_EINVAL;
+
+    count = node_get_child_count(node) - 1; /* subtract threshold child */
+
+    sorted = wally_malloc(count * sizeof(struct multisig_sort_data_t));
+    if (!sorted)
+        return WALLY_ENOMEM;
+
+    /* skip threshold child */
+    child = child->next;
+    /* Collect all key children */
+    for (i = 0; ret == WALLY_OK && i < count; ++i) {
+        struct multisig_sort_data_t *item = sorted + i;
+        /* Keys in tapscript are x-only (32 bytes raw) */
+        ret = generate_script(ctx, child, item->pubkey, sizeof(item->pubkey), &item->pubkey_len);
+        /* Must be 32-byte x-only key */
+        if (ret == WALLY_OK && item->pubkey_len != EC_XONLY_PUBLIC_KEY_LEN)
+            ret = WALLY_ERROR;
+        child = child->next;
+    }
+
+    if (ret == WALLY_OK) {
+        /* For sortedmulti_a, sort keys lexicographically */
+        if (node->kind == KIND_MINISCRIPT_MULTI_A_S)
+            qsort(sorted, count, sizeof(sorted[0]), compare_multisig_node);
+
+        /* Emit keys with OP_CHECKSIG (first) and OP_CHECKSIGADD (rest) */
+        for (i = 0; ret == WALLY_OK && i < count; ++i) {
+            const size_t key_len = sorted[i].pubkey_len;
+            /* push opcode + key bytes + OP_CHECKSIG/OP_CHECKSIGADD */
+            if (offset + key_len + 2 <= script_len) {
+                /* push opcode (0x20 for 32-byte key) */
+                script[offset] = key_len & 0xff;
+                memcpy(script + offset + 1, sorted[i].pubkey, key_len);
+                script[offset + key_len + 1] = (i == 0) ? OP_CHECKSIG : OP_CHECKSIGADD;
+            }
+            offset += key_len + 2; /* push + key + opcode */
+        }
+
+        if (ret == WALLY_OK) {
+            /* Emit threshold <k> OP_NUMEQUAL */
+            size_t number_len;
+            const int64_t threshold = node->child->number;
+            /* Pass NULL when buffer is exhausted to get required size without writing */
+            unsigned char *num_script = offset < script_len ? script + offset : NULL;
+            size_t remaining_len = offset < script_len ? script_len - offset : 0;
+            ret = generate_number(threshold, node->parent, num_script,
+                                  remaining_len, &number_len);
+            if (ret == WALLY_OK) {
+                *written = offset + number_len + 1;
+                if (*written <= script_len)
+                    script[*written - 1] = OP_NUMEQUAL;
             }
         }
     }
@@ -2083,6 +2202,16 @@ static const struct ms_builtin_t g_builtins[] = {
         I_NAME("thresh"),
         KIND_MINISCRIPT_THRESH, TYPE_B | PROP_D | PROP_U,
         0xffffffff, verify_thresh, generate_thresh
+    }, {
+        I_NAME("multi_a"),
+        KIND_MINISCRIPT_MULTI_A,
+        TYPE_B | PROP_N | PROP_D | PROP_U | PROP_E | PROP_M | PROP_S | PROP_K,
+        0xffffffff, verify_multi_a, generate_multi_a
+    }, {
+        I_NAME("sortedmulti_a"),
+        KIND_MINISCRIPT_MULTI_A_S,
+        TYPE_B | PROP_N | PROP_D | PROP_U | PROP_E | PROP_M | PROP_S | PROP_K,
+        0xffffffff, verify_multi_a, generate_multi_a
     }
     /* Elements confidential descriptors */
 #ifdef BUILD_ELEMENTS
@@ -2171,6 +2300,9 @@ static int generate_script(ms_ctx *ctx, ms_node *node,
                 }
             }
         }
+    } else if (node->kind == KIND_TAPTREE_BRANCH) {
+        /* Taptree branch nodes cannot be directly generated as a script */
+        return WALLY_EINVAL;
     } else if ((node->kind & KIND_BIP32) == KIND_BIP32) {
         output_len = node->flags & WALLY_MS_IS_X_ONLY ? EC_XONLY_PUBLIC_KEY_LEN : EC_PUBLIC_KEY_LEN;
         if (output_len > script_len) {

@@ -87,6 +87,13 @@ size_t scriptint_get_length(int64_t signed_v);
 
 size_t scriptint_to_bytes(int64_t signed_v, unsigned char *bytes_out);
 
+/* Compute the BIP-341 tapleaf hash:
+ *   tagged_hash("TapLeaf", leaf_version || compact_size(script_len) || script)
+ * hash_out must have room for SHA256_LEN bytes. */
+int tapleaf_hash(unsigned char leaf_version,
+                 const unsigned char *script, size_t script_len,
+                 unsigned char *hash_out);
+
 size_t varint_length_from_bytes(const unsigned char *bytes);
 
 size_t confidential_asset_length_from_bytes(const unsigned char *bytes);
