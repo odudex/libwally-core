@@ -631,6 +631,7 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
         ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
 
         static const unsigned char push_1[] = {0x01};
+        static const unsigned char zero32[32] = {0};
 
         switch (n->kind) {
 
@@ -696,14 +697,36 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
             break;
         }
 
+        case KIND_MINISCRIPT_SHA256:
+        case KIND_MINISCRIPT_HASH256:
+        case KIND_MINISCRIPT_RIPEMD160:
+        case KIND_MINISCRIPT_HASH160: {
+            unsigned char preimage[32];
+            uint32_t hash_type;
+            if (n->kind == KIND_MINISCRIPT_SHA256)         hash_type = MS_HASH_SHA256;
+            else if (n->kind == KIND_MINISCRIPT_HASH256)   hash_type = MS_HASH_HASH256;
+            else if (n->kind == KIND_MINISCRIPT_RIPEMD160) hash_type = MS_HASH_RIPEMD160;
+            else                                           hash_type = MS_HASH_HASH160;
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            if (stfr && stfr->lookup_preimage &&
+                stfr->lookup_preimage(stfr, (const unsigned char *)n->data,
+                                      n->data_len, hash_type, preimage)) {
+                ms_satisfaction_init(&entry.sat, MS_WITNESS_STACK);
+                entry.sat = satisfaction_push_item(entry.sat, preimage, 32);
+                ms_satisfaction_init(&entry.dissat, MS_WITNESS_STACK);
+                entry.dissat = satisfaction_push_item(entry.dissat, zero32, 32);
+            } else {
+                ms_satisfaction_init(&entry.sat,    MS_WITNESS_UNAVAILABLE);
+                ms_satisfaction_init(&entry.dissat, MS_WITNESS_UNAVAILABLE);
+            }
+            break;
+        }
+
         case KIND_MINISCRIPT_PK:
         case KIND_MINISCRIPT_PKH:
         case KIND_MINISCRIPT_OLDER:
         case KIND_MINISCRIPT_AFTER:
-        case KIND_MINISCRIPT_SHA256:
-        case KIND_MINISCRIPT_HASH256:
-        case KIND_MINISCRIPT_RIPEMD160:
-        case KIND_MINISCRIPT_HASH160:
         case KIND_MINISCRIPT_MULTI:
         case KIND_MINISCRIPT_MULTI_A:
         case KIND_MINISCRIPT_MULTI_A_S:
