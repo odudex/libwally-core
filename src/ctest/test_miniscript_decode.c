@@ -777,6 +777,173 @@ static bool test_decode_and_b(void)
     return ok;
 }
 
+static bool test_decode_or_b(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+    unsigned char key[33];
+    unsigned char script[2 + 1 + 1 + 1 + 33 + 1]; /* 39 bytes */
+    size_t off = 0;
+    memset(key, 0x02, 33);
+    script[off++] = 0x01; script[off++] = 0x64; /* push 1 byte: 100 */
+    script[off++] = OP_CHECKSEQUENCEVERIFY;
+    script[off++] = OP_SWAP;
+    script[off++] = 0x21; /* push 33 bytes */
+    memcpy(script + off, key, 33); off += 33;
+    script[off++] = OP_BOOLOR;
+    ret = decode_script_to_node(script, sizeof(script), 0, &output);
+    CHECK(ret == WALLY_OK);
+    CHECK(output != NULL);
+    CHECK(output->kind == KIND_MINISCRIPT_OR_B);
+    /* left (B) = older(100) */
+    CHECK(output->child != NULL);
+    CHECK(output->child->kind == KIND_MINISCRIPT_OLDER);
+    CHECK(output->child->number == 100);
+    /* right (W) = s:pk_k(A) = SWAP wrapping PK_K */
+    CHECK(output->child->next != NULL);
+    CHECK(output->child->next->kind == KIND_MINISCRIPT_SWAP);
+    CHECK(output->child->next->child != NULL);
+    CHECK(output->child->next->child->kind == KIND_MINISCRIPT_PK_K);
+    CHECK(output->child->next->child->data_len == 33);
+    CHECK(memcmp(output->child->next->child->data, key, 33) == 0);
+    ms_node_free(output); output = NULL;
+    return ok;
+}
+
+static bool test_decode_or_c(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+    unsigned char key[33];
+    unsigned char script[2 + 1 + 1 + 1 + 33 + 1]; /* 39 bytes */
+    size_t off = 0;
+    memset(key, 0x03, 33);
+    script[off++] = 0x01; script[off++] = 0x64;
+    script[off++] = OP_CHECKSEQUENCEVERIFY;
+    script[off++] = OP_NOTIF;
+    script[off++] = 0x21;
+    memcpy(script + off, key, 33); off += 33;
+    script[off++] = OP_ENDIF;
+    ret = decode_script_to_node(script, sizeof(script), 0, &output);
+    CHECK(ret == WALLY_OK);
+    CHECK(output != NULL);
+    CHECK(output->kind == KIND_MINISCRIPT_OR_C);
+    CHECK(output->child != NULL);
+    CHECK(output->child->kind == KIND_MINISCRIPT_OLDER);
+    CHECK(output->child->number == 100);
+    CHECK(output->child->next != NULL);
+    CHECK(output->child->next->kind == KIND_MINISCRIPT_PK_K);
+    CHECK(output->child->next->data_len == 33);
+    CHECK(memcmp(output->child->next->data, key, 33) == 0);
+    ms_node_free(output); output = NULL;
+    return ok;
+}
+
+static bool test_decode_or_d(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+    unsigned char key[33];
+    unsigned char script[2 + 1 + 1 + 1 + 1 + 33 + 1]; /* 40 bytes */
+    size_t off = 0;
+    memset(key, 0x04, 33);
+    script[off++] = 0x01; script[off++] = 0x64;
+    script[off++] = OP_CHECKSEQUENCEVERIFY;
+    script[off++] = OP_IFDUP;
+    script[off++] = OP_NOTIF;
+    script[off++] = 0x21;
+    memcpy(script + off, key, 33); off += 33;
+    script[off++] = OP_ENDIF;
+    ret = decode_script_to_node(script, sizeof(script), 0, &output);
+    CHECK(ret == WALLY_OK);
+    CHECK(output != NULL);
+    CHECK(output->kind == KIND_MINISCRIPT_OR_D);
+    CHECK(output->child != NULL);
+    CHECK(output->child->kind == KIND_MINISCRIPT_OLDER);
+    CHECK(output->child->number == 100);
+    CHECK(output->child->next != NULL);
+    CHECK(output->child->next->kind == KIND_MINISCRIPT_PK_K);
+    CHECK(output->child->next->data_len == 33);
+    CHECK(memcmp(output->child->next->data, key, 33) == 0);
+    ms_node_free(output); output = NULL;
+    return ok;
+}
+
+static bool test_decode_or_i(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+    unsigned char key[33];
+    unsigned char script[1 + 2 + 1 + 1 + 1 + 33 + 1]; /* 40 bytes */
+    size_t off = 0;
+    memset(key, 0x05, 33);
+    script[off++] = OP_IF;
+    script[off++] = 0x01; script[off++] = 0x64;
+    script[off++] = OP_CHECKSEQUENCEVERIFY;
+    script[off++] = OP_ELSE;
+    script[off++] = 0x21;
+    memcpy(script + off, key, 33); off += 33;
+    script[off++] = OP_ENDIF;
+    ret = decode_script_to_node(script, sizeof(script), 0, &output);
+    CHECK(ret == WALLY_OK);
+    CHECK(output != NULL);
+    CHECK(output->kind == KIND_MINISCRIPT_OR_I);
+    CHECK(output->child != NULL);
+    CHECK(output->child->kind == KIND_MINISCRIPT_OLDER);
+    CHECK(output->child->number == 100);
+    CHECK(output->child->next != NULL);
+    CHECK(output->child->next->kind == KIND_MINISCRIPT_PK_K);
+    CHECK(output->child->next->data_len == 33);
+    CHECK(memcmp(output->child->next->data, key, 33) == 0);
+    ms_node_free(output); output = NULL;
+    return ok;
+}
+
+static bool test_decode_andor(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+    unsigned char keyA[33], keyB[33];
+    unsigned char script[2 + 1 + 1 + 1 + 33 + 1 + 1 + 33 + 1]; /* 74 bytes */
+    size_t off = 0;
+    memset(keyA, 0x02, 33);
+    memset(keyB, 0x03, 33);
+    script[off++] = 0x01; script[off++] = 0x64;
+    script[off++] = OP_CHECKSEQUENCEVERIFY;
+    script[off++] = OP_NOTIF;
+    script[off++] = 0x21;
+    memcpy(script + off, keyB, 33); off += 33;
+    script[off++] = OP_ELSE;
+    script[off++] = 0x21;
+    memcpy(script + off, keyA, 33); off += 33;
+    script[off++] = OP_ENDIF;
+    ret = decode_script_to_node(script, sizeof(script), 0, &output);
+    CHECK(ret == WALLY_OK);
+    CHECK(output != NULL);
+    CHECK(output->kind == KIND_MINISCRIPT_ANDOR);
+    /* child X = older(100) */
+    CHECK(output->child != NULL);
+    CHECK(output->child->kind == KIND_MINISCRIPT_OLDER);
+    CHECK(output->child->number == 100);
+    /* Y = pk_k(A) (true branch) */
+    CHECK(output->child->next != NULL);
+    CHECK(output->child->next->kind == KIND_MINISCRIPT_PK_K);
+    CHECK(output->child->next->data_len == 33);
+    CHECK(memcmp(output->child->next->data, keyA, 33) == 0);
+    /* Z = pk_k(B) (false branch) */
+    CHECK(output->child->next->next != NULL);
+    CHECK(output->child->next->next->kind == KIND_MINISCRIPT_PK_K);
+    CHECK(output->child->next->next->data_len == 33);
+    CHECK(memcmp(output->child->next->next->data, keyB, 33) == 0);
+    ms_node_free(output); output = NULL;
+    return ok;
+}
+
 int main(void)
 {
     bool ok = true;
@@ -802,6 +969,26 @@ int main(void)
     }
     if (!test_decode_and_b()) {
         printf("[test_decode_and_b] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_or_b()) {
+        printf("[test_decode_or_b] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_or_c()) {
+        printf("[test_decode_or_c] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_or_d()) {
+        printf("[test_decode_or_d] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_or_i()) {
+        printf("[test_decode_or_i] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_andor()) {
+        printf("[test_decode_andor] failed!\n");
         ok = false;
     }
     wally_cleanup(0);

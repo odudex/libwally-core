@@ -858,6 +858,24 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
                 nt.kind = NT_W_EXPRESSION; nt.k = nt.n = 0;
                 if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
                 break;
+            } else if (tok->kind == TK_BOOL_OR) {
+                tk_cursor_next(&cursor); /* consume TK_BOOL_OR */
+                nt.kind = NT_OR_B; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_EXPRESSION; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_W_EXPRESSION; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                break;
+            } else if (tok->kind == TK_END_IF) {
+                tk_cursor_next(&cursor); /* consume TK_END_IF */
+                nt.kind = NT_END_IF; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_MAYBE_AND_V; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_EXPRESSION; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                break;
             }
             ret = WALLY_EINVAL;
             goto cleanup;
