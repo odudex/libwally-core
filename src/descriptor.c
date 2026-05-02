@@ -305,6 +305,7 @@ static const struct addr_ver_t *addr_ver_from_family(
 static const struct ms_builtin_t *builtin_get(const ms_node *node);
 static int generate_script(ms_ctx *ctx, ms_node *node,
                            unsigned char *script, size_t script_len, size_t *written);
+static int node_generation_size(const ms_node *node, size_t *total);
 static int is_valid_policy_map(const struct wally_map *map_in, bool *is_elements);
 
 static bool is_elements_policy_map(const struct wally_map *map_in)
@@ -599,8 +600,11 @@ static int node_is_top(const ms_node *node)
 
 static bool node_is_root(const ms_node *node)
 {
-    /* True if this is a (possibly temporary) top level node, or an argument of a builtin */
-    return !node->parent || node->parent->builtin;
+    /* True if this is a (possibly temporary) top level node, or an argument of a builtin,
+     * or a direct child of a taptree branch node (each taptree leaf is an independent
+     * miniscript expression that must be validated as its own root). */
+    return !node->parent || node->parent->builtin ||
+           node->parent->kind == KIND_TAPTREE_BRANCH;
 }
 
 #ifdef BUILD_ELEMENTS
@@ -1281,7 +1285,7 @@ static int node_verify_wrappers(ms_node *node)
 static int generate_number(int64_t number, ms_node *parent,
                            unsigned char *script, size_t script_len, size_t *written)
 {
-    if ((parent && !parent->builtin))
+    if (parent && !parent->builtin && parent->kind != KIND_TAPTREE_BRANCH)
         return WALLY_EINVAL;
 
     if (number >= -1 && number <= 16) {
@@ -1658,6 +1662,254 @@ static int generate_raw_tr(ms_ctx *ctx, ms_node *node,
     }
     *written = WALLY_SCRIPTPUBKEY_P2TR_LEN;
     return ret;
+}
+
+static int compute_tapbranch_hash(const unsigned char *left,
+                                  const unsigned char *right,
+                                  unsigned char *hash_out)
+{
+    unsigned char buf[SHA256_LEN * 2];
+    const unsigned char *first = left, *second = right;
+
+    /* BIP-341: child hashes are sorted lexicographically before hashing so the
+     * merkle path doesn't need to encode left/right direction.
+     *   If k_j < e_j: k_{j+1} = hash_TapBranch(k_j || e_j)
+     *   If k_j >= e_j: k_{j+1} = hash_TapBranch(e_j || k_j)
+     */
+    if (memcmp(left, right, SHA256_LEN) > 0) {
+        first = right;
+        second = left;
+    }
+
+    memcpy(buf, first, SHA256_LEN);
+    memcpy(buf + SHA256_LEN, second, SHA256_LEN);
+    return wally_bip340_tagged_hash(buf, sizeof(buf), "TapBranch", hash_out, SHA256_LEN);
+}
+
+static int compute_taptree_hash(ms_ctx *ctx, ms_node *subtree_root,
+                                unsigned char *hash_out)
+{
+    if (subtree_root->kind == KIND_TAPTREE_BRANCH) {
+        unsigned char left_hash[SHA256_LEN], right_hash[SHA256_LEN];
+        int ret;
+
+        /* branch must have 2 child */
+        if (!subtree_root->child || !subtree_root->child->next)
+            return WALLY_EINVAL;
+
+        ret = compute_taptree_hash(ctx, subtree_root->child, left_hash);
+        if (ret != WALLY_OK)
+            return ret;
+        ret = compute_taptree_hash(ctx, subtree_root->child->next, right_hash);
+        if (ret != WALLY_OK)
+            return ret;
+        return compute_tapbranch_hash(left_hash, right_hash, hash_out);
+    } else {
+        /* Leaf node: must be a complete miniscript expression (type B/V/K/W) */
+        if (!(subtree_root->type_properties & TYPE_MASK))
+            return WALLY_EINVAL;
+
+        unsigned char *script_buf;
+        size_t script_buf_len = 0, written = 0;
+        int ret;
+
+        ret = node_generation_size(subtree_root, &script_buf_len);
+        if (ret != WALLY_OK)
+            return ret;
+        if (!(script_buf = wally_malloc(script_buf_len)))
+            return WALLY_ENOMEM;
+
+        ret = generate_script(ctx, subtree_root, script_buf, script_buf_len, &written);
+        if (ret == WALLY_OK)
+            ret = tapleaf_hash(WALLY_LEAF_VERSION_TAPSCRIPT, script_buf, written, hash_out);
+        wally_free(script_buf);
+        return ret;
+    }
+}
+
+static uint32_t count_taptree_leaves(const ms_node *node)
+{
+    if (!node) return 0;
+    if (node->kind == KIND_TAPTREE_BRANCH) {
+        if (!node->child || !node->child->next) return 0;
+        return count_taptree_leaves(node->child) +
+               count_taptree_leaves(node->child->next);
+    }
+    return 1;
+}
+
+/* Recursive helper for find_taptree_leaf. Caller MUST initialise
+ * *current_index to 0 before the (top-level) call. */
+static ms_node *find_taptree_leaf_impl(ms_node *node, uint32_t target_index, uint32_t *current_index)
+{
+    if (!node) return NULL;
+    if (node->kind == KIND_TAPTREE_BRANCH) {
+        if (!node->child || !node->child->next) return NULL;
+        ms_node *found = find_taptree_leaf_impl(node->child, target_index, current_index);
+        if (found) return found;
+        return find_taptree_leaf_impl(node->child->next, target_index, current_index);
+    }
+    if (*current_index == target_index) return node;
+    (*current_index)++;
+    return NULL;
+}
+
+/* Return the n-th leaf of the taptree (DFS left-first), or NULL if
+ * target_index is out of range. */
+static ms_node *find_taptree_leaf(ms_node *taptree_root, uint32_t target_index)
+{
+    uint32_t current_index = 0;
+    return find_taptree_leaf_impl(taptree_root, target_index, &current_index);
+}
+
+/* Recursive helper for collect_merkle_path. Caller MUST initialise *path_len
+ * to 0, *current_index to 0, and *found to false before the (top-level) call.
+ * As recursion unwinds (walking back from the target leaf to the root), each
+ * branch on the path appends its sibling hash to path_out, in leaf-to-root
+ * order. */
+static int collect_merkle_path_impl(ms_ctx *ctx, ms_node *subtree_root,
+                                    uint32_t target_index, uint32_t *current_index,
+                                    unsigned char *path_out, uint32_t *path_len,
+                                    unsigned char *hash_out, bool *found)
+{
+    if (subtree_root->kind == KIND_TAPTREE_BRANCH) {
+        unsigned char left_hash[SHA256_LEN], right_hash[SHA256_LEN];
+        bool left_found = false, right_found = false;
+        int ret;
+
+        /* a branch has 2 child */
+        if (!subtree_root->child || !subtree_root->child->next)
+            return WALLY_EINVAL;
+
+        ret = collect_merkle_path_impl(ctx, subtree_root->child, target_index, current_index,
+                                       path_out, path_len, left_hash, &left_found);
+        if (ret != WALLY_OK)
+            return ret;
+        ret = collect_merkle_path_impl(ctx, subtree_root->child->next, target_index, current_index,
+                                       path_out, path_len, right_hash, &right_found);
+        if (ret != WALLY_OK)
+            return ret;
+
+        if (left_found) {
+            memcpy(path_out + (*path_len) * SHA256_LEN, right_hash, SHA256_LEN);
+            (*path_len)++;
+            *found = true;
+        } else if (right_found) {
+            memcpy(path_out + (*path_len) * SHA256_LEN, left_hash, SHA256_LEN);
+            (*path_len)++;
+            *found = true;
+        }
+        return compute_tapbranch_hash(left_hash, right_hash, hash_out);
+    } else {
+        /* Leaf node: must be a complete miniscript expression (type B/V/K/W) */
+        if (!(subtree_root->type_properties & TYPE_MASK))
+            return WALLY_EINVAL;
+
+        unsigned char *script_buf;
+        size_t script_buf_len = 0, written = 0;
+        int ret;
+
+        ret = node_generation_size(subtree_root, &script_buf_len);
+        if (ret != WALLY_OK)
+            return ret;
+        if (!(script_buf = wally_malloc(script_buf_len)))
+            return WALLY_ENOMEM;
+
+        ret = generate_script(ctx, subtree_root, script_buf, script_buf_len, &written);
+        if (ret == WALLY_OK)
+            ret = tapleaf_hash(WALLY_LEAF_VERSION_TAPSCRIPT, script_buf, written, hash_out);
+        wally_free(script_buf);
+
+        if (ret == WALLY_OK) {
+            if (*current_index == target_index)
+                *found = true;
+            (*current_index)++;
+        }
+        return ret;
+    }
+}
+
+/* Build the merkle proof for the target leaf in the taptree.
+ *
+ * The function walks from the taptree root to the target leaf, writing
+ * nothing to path_out on the way in. As recursion unwinds (i.e. while
+ * walking back from the leaf to the root), each branch on the path appends
+ * its sibling hash to path_out. The result is a sequence of 32-byte sibling
+ * hashes in leaf-to-root order:
+ *   path_out[0] = the spent leaf's immediate sibling
+ *   path_out[1] = the next sibling closer to the root
+ *   ...
+ *   path_out[*path_len_out - 1] = the sibling closest to the root
+ *
+ * The root itself is never in the proof; a verifier reconstructs it by
+ * starting at the spent leaf and combining it with each sibling in order,
+ * effectively re-walking the same leaf-to-root path. BIP-341 sorts each pair
+ * lexicographically before hashing, so left/right direction is not encoded.
+ *
+ * Outputs:
+ *   path_out     - merkle path siblings, packed contiguously (32 bytes each)
+ *   path_len_out - number of 32-byte hashes written to path_out
+ *   hash_out     - the merkle root of the entire taptree
+ *
+ * Returns WALLY_EINVAL if target_index does not identify a leaf in the tree.
+ */
+static int collect_merkle_path(ms_ctx *ctx, ms_node *taptree_root,
+                               uint32_t target_index,
+                               unsigned char *path_out, uint32_t *path_len_out,
+                               unsigned char *hash_out)
+{
+    uint32_t current_index = 0;
+    bool found = false;
+    int ret;
+
+    *path_len_out = 0;
+    ret = collect_merkle_path_impl(ctx, taptree_root, target_index,
+                                   &current_index, path_out, path_len_out,
+                                   hash_out, &found);
+    if (ret == WALLY_OK && !found)
+        return WALLY_EINVAL;
+    return ret;
+}
+
+static uint32_t count_keys_in_subtree(const ms_node *node)
+{
+    uint32_t count = 0;
+    const ms_node *child;
+    if (!node) return 0;
+    if (node->kind & KIND_KEY) return 1;
+    if (node->builtin) {
+        for (child = node->child; child; child = child->next)
+            count += count_keys_in_subtree(child);
+    }
+    return count;
+}
+
+/* Recursive helper for find_nth_key_in_subtree. Caller MUST initialise
+ * *current_index to 0 before the (top-level) call. */
+static ms_node *find_nth_key_in_subtree_impl(ms_node *node, uint32_t target_index, uint32_t *current_index)
+{
+    ms_node *child, *found;
+    if (!node) return NULL;
+    if (node->kind & KIND_KEY) {
+        if (*current_index == target_index) return node;
+        (*current_index)++;
+        return NULL;
+    }
+    if (node->builtin) {
+        for (child = node->child; child; child = child->next) {
+            found = find_nth_key_in_subtree_impl(child, target_index, current_index);
+            if (found) return found;
+        }
+    }
+    return NULL;
+}
+
+/* Return the n-th key (DFS left-first) inside a miniscript subtree, or NULL
+ * if target_index is out of range. */
+static ms_node *find_nth_key_in_subtree(ms_node *subtree_root, uint32_t target_index)
+{
+    uint32_t current_index = 0;
+    return find_nth_key_in_subtree_impl(subtree_root, target_index, &current_index);
 }
 
 static int generate_tr(ms_ctx *ctx, ms_node *node,
@@ -2450,8 +2702,10 @@ static int analyze_key_hex(ms_ctx *ctx, ms_node *node,
         if (key_len == EC_XONLY_PUBLIC_KEY_LEN && !allow_xonly)
             return WALLY_OK; /* X-only not allowed here */
         if (key_len != EC_XONLY_PUBLIC_KEY_LEN) {
-            if (flags & WALLY_MINISCRIPT_TAPSCRIPT)
-                return WALLY_OK; /* Only X-only pubkeys allowed under tapscript */
+            if (flags & WALLY_MINISCRIPT_TAPSCRIPT) {
+                /* In tapscript, compressed keys are accepted and stripped to x-only */
+                make_xonly = true;
+            }
             if (make_xonly) {
                 /* Convert to x-only */
                 --key_len;
@@ -2708,12 +2962,141 @@ static int analyze_miniscript_value(ms_ctx *ctx, const char *str, size_t str_len
     return analyze_miniscript_key(ctx, flags, node, parent, force_ct);
 }
 
+/* Forward declaration */
+static int analyze_miniscript(ms_ctx *ctx, const char *str, size_t str_len,
+                              uint32_t kind, uint32_t flags, ms_node *prev_node,
+                              ms_node *parent, ms_node **output);
+
+/*
+ * Recursive helper for parse_taptree. Tracks the current branch depth
+ * to enforce the BIP-341 maximum of WALLY_DESCRIPTOR_TAPTREE_MAX_DEPTH.
+ */
+static int parse_taptree_impl(ms_ctx *ctx, const char *str, size_t str_len,
+                              uint32_t kind, uint32_t flags, uint32_t depth,
+                              ms_node *parent, ms_node *prev_sibling, ms_node **output)
+{
+    int ret;
+
+    if (!str_len)
+        return WALLY_EINVAL;
+
+    if (depth >= WALLY_DESCRIPTOR_TAPTREE_MAX_DEPTH)
+        return WALLY_EINVAL;
+
+    if (str[0] == '{') {
+        /* Branch node: {LEFT, RIGHT} */
+        size_t j, brace_depth = 1, paren_depth = 0, comma_pos = 0;
+        ms_node *node, *left = NULL, *right = NULL;
+
+        /* Minimum 3 chars: `{`, ≥1 byte of content, `}`. The actual minimum
+         * valid branch is much larger (each leaf must be a typed miniscript
+         * expression); this is just a buffer-size sanity check before we
+         * start scanning. */
+        if (str_len < 3 || str[str_len - 1] != '}')
+            return WALLY_EINVAL;
+
+        /* Find the comma separating left and right subtrees at brace_depth=1, paren_depth=0 */
+        for (j = 1; j < str_len - 1; ++j) {
+            if (str[j] == '{') ++brace_depth;
+            else if (str[j] == '}') {
+                if (!brace_depth)
+                    return WALLY_EINVAL;
+                --brace_depth;
+            } else if (str[j] == '(') ++paren_depth;
+            else if (str[j] == ')') {
+                if (!paren_depth)
+                    return WALLY_EINVAL; /* Unmatched ')' */
+                --paren_depth;
+            } else if (str[j] == ',' && brace_depth == 1 && paren_depth == 0) {
+                if (comma_pos != 0)
+                    return WALLY_EINVAL; /* Multiple commas at separator level */
+                comma_pos = j;
+            }
+        }
+        /* comma_pos == 0:           no separator found
+         * comma_pos == 1:           empty left subtree ({,b})
+         * comma_pos == str_len - 2: empty right subtree ({a,}) */
+        if (comma_pos == 0 || comma_pos == 1 || comma_pos == str_len - 2)
+            return WALLY_EINVAL;
+
+        /* Allocate branch node */
+        if (!(node = wally_calloc(sizeof(*node))))
+            return WALLY_ENOMEM;
+        node->kind = KIND_TAPTREE_BRANCH;
+        node->parent = parent;
+
+        /* Parse left subtree: str[1..comma_pos-1] */
+        ret = parse_taptree_impl(ctx, str + 1, comma_pos - 1,
+                                 kind, flags, depth + 1, node, NULL, &left);
+        if (ret != WALLY_OK) {
+            node_free(node); /* node_free() will also free left */
+            return ret;
+        }
+
+        /* Parse right subtree: str[comma_pos+1..str_len-2] */
+        ret = parse_taptree_impl(ctx, str + comma_pos + 1, str_len - comma_pos - 2,
+                                 kind, flags, depth + 1, node, left, &right);
+        if (ret != WALLY_OK) {
+            node_free(node); /* node_free() will free all children*/
+            return ret;
+        }
+        (void)right; /* linked via left->next by the recursive call */
+
+        /* Link branch node to its parent and previous sibling */
+        *output = node;
+        /* First child (left arm of {L,R}): link as parent's first child */
+        if (parent && !parent->child)
+            parent->child = node;
+        /* Subsequent child (right arm of {L,R}, or the taptree of tr(KEY,T)):
+         * link via the previous sibling */
+        else if (prev_sibling)
+            prev_sibling->next = node;
+    } else {
+        /* Leaf node: bare miniscript expression in tapscript context */
+        ret = analyze_miniscript(ctx, str, str_len, KIND_MINISCRIPT,
+                                 flags | WALLY_MINISCRIPT_TAPSCRIPT,
+                                 prev_sibling, parent, output);
+        if (ret == WALLY_OK && *output) {
+            /* A taptree leaf must be a complete miniscript expression (type B/V/K/W).
+             * Raw key/value nodes (bare keys, numbers) are not valid leaves. */
+            if (!((*output)->type_properties & TYPE_MASK)) {
+                if (prev_sibling)
+                    prev_sibling->next = NULL; /* unlink from sibling chain */
+                else if (parent)
+                    parent->child = NULL; /* reset dangling pointer */
+                node_free(*output);
+                *output = NULL;
+                ret = WALLY_EINVAL;
+            }
+        }
+    }
+
+    return ret;
+}
+
+/*
+ * Parse a taptree expression: either a bare miniscript leaf or a {LEFT,RIGHT}
+ * branch.
+ *   str/str_len: the taptree text (not including the surrounding parentheses
+ *                of tr())
+ *   parent:      the parent node (the tr() node)
+ *   prev_sibling: previous sibling node (the tr() internal key, for linked list)
+ *   output:      destination for the created node
+ */
+static int parse_taptree(ms_ctx *ctx, const char *str, size_t str_len,
+                         uint32_t kind, uint32_t flags,
+                         ms_node *parent, ms_node *prev_sibling, ms_node **output)
+{
+    return parse_taptree_impl(ctx, str, str_len, kind, flags, 0,
+                              parent, prev_sibling, output);
+}
+
 static int analyze_miniscript(ms_ctx *ctx, const char *str, size_t str_len,
                               uint32_t kind, uint32_t flags, ms_node *prev_node,
                               ms_node *parent, ms_node **output)
 {
     size_t i, offset = 0, child_offset = 0;
-    uint32_t indent = 0;
+    uint32_t indent = 0, brace_depth = 0;
     bool seen_indent = false, collect_child = false, copy_child = false;
     ms_node *node, *child = NULL, *prev_child = NULL;
     int ret = WALLY_OK;
@@ -2767,12 +3150,22 @@ static int analyze_miniscript(ms_ctx *ctx, const char *str, size_t str_len,
                 }
             }
             seen_indent = true;
+        } else if (str[i] == '{') {
+            ++brace_depth;
+            seen_indent = true;
+        } else if (str[i] == '}') {
+            if (!brace_depth) {
+                ret = WALLY_EINVAL; /* Unmatched '}' */
+                break;
+            }
+            --brace_depth;
+            seen_indent = true;
         } else if (str[i] == ',') {
             if (!indent) {
                 ret = WALLY_EINVAL; /* Comma outside of ()'s */
                 break;
             }
-            if (collect_child && (indent == 1)) {
+            if (collect_child && (indent == 1) && brace_depth == 0) {
                 copy_child = true;
             }
             seen_indent = true;
@@ -2793,11 +3186,20 @@ static int analyze_miniscript(ms_ctx *ctx, const char *str, size_t str_len,
         }
 
         if (copy_child) {
-            if (i - child_offset &&
-                (ret = analyze_miniscript(ctx, str + child_offset, i - child_offset,
-                                          kind, flags, prev_child,
-                                          node, &child)) != WALLY_OK)
-                break;
+            if (i - child_offset) {
+                if (node->kind == KIND_DESCRIPTOR_TR && prev_child != NULL) {
+                    /* Second argument of tr() is the taptree: parse_taptree
+                     * handles both {LEFT,RIGHT} branches and a single bare
+                     * miniscript leaf. */
+                    ret = parse_taptree(ctx, str + child_offset, i - child_offset,
+                                        kind, flags, node, prev_child, &child);
+                } else {
+                    ret = analyze_miniscript(ctx, str + child_offset, i - child_offset,
+                                             kind, flags, prev_child, node, &child);
+                }
+                if (ret != WALLY_OK)
+                    break;
+            }
 
             prev_child = child;
             child = NULL;
@@ -2814,6 +3216,12 @@ static int analyze_miniscript(ms_ctx *ctx, const char *str, size_t str_len,
         offset = node->wrapper_str[0] ? strlen(node->wrapper_str) + 1 : 0;
         ret = analyze_miniscript_value(ctx, str + offset, str_len - offset,
                                        flags, node, parent);
+    }
+
+    /* Propagate tapscript context flag BEFORE verification so verify functions can check it */
+    if (flags & WALLY_MINISCRIPT_TAPSCRIPT) {
+        node->flags |= WALLY_MS_IS_TAPSCRIPT;
+        ctx->features |= WALLY_MS_IS_TAPSCRIPT;
     }
 
     if (ret == WALLY_OK && node->builtin) {
@@ -2907,6 +3315,12 @@ static int node_generation_size(const ms_node *node, size_t *total)
         case KIND_DESCRIPTOR_TR:
             *total += WALLY_SCRIPTPUBKEY_P2TR_LEN;
             break;
+        case KIND_MINISCRIPT_MULTI_A:
+        case KIND_MINISCRIPT_MULTI_A_S:
+            /* Each key: 1 (push) + 32 (x-only key) + 1 (OP_CHECKSIG/OP_CHECKSIGADD) = 34.
+             * Plus threshold (up to 3 bytes) + OP_NUMEQUAL (1 byte) = 4. */
+            *total += (node_get_child_count(node) - 1) * 34 + 4;
+            break;
         case KIND_MINISCRIPT_PK_K:
             *total += 1;
             break;
@@ -2968,6 +3382,8 @@ static int node_generation_size(const ms_node *node, size_t *total)
             *total += EC_XONLY_PUBLIC_KEY_LEN;
         else
             *total += EC_PUBLIC_KEY_LEN;
+    } else if (node->kind == KIND_TAPTREE_BRANCH) {
+        /* Taptree branch nodes don't contribute to scriptPubkey size */
     } else
         return WALLY_ERROR; /* Should not happen */
 
