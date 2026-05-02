@@ -826,8 +826,9 @@ static int verify_raw_tr(ms_ctx *ctx, ms_node *node)
 static int verify_tr(ms_ctx *ctx, ms_node *node)
 {
     const uint32_t child_count = node_get_child_count(node);
-    if (child_count != 1u)
-        return WALLY_EINVAL; /* FIXME: Support script paths */
+    /* only tr(key) and tr(key, tree) is valid */
+    if (child_count < 1u || child_count > 2u)
+        return WALLY_EINVAL;
     if (!node_is_top(node) || node->child->builtin || !(node->child->kind & KIND_KEY) ||
         node_has_uncompressed_key(ctx, node))
         return WALLY_EINVAL;
@@ -1352,7 +1353,8 @@ static int generate_pk_h(ms_ctx *ctx, ms_node *node,
     if (script_len >= WALLY_SCRIPTPUBKEY_P2PKH_LEN - 1) {
         ret = generate_pk_k(ctx, node, buff+3, sizeof(buff)-3, written);
         if (ret == WALLY_OK) {
-            if (node->child->flags & WALLY_MS_IS_X_ONLY)
+            if ((node->child->flags & WALLY_MS_IS_X_ONLY) &&
+                !(node->flags & WALLY_MS_IS_TAPSCRIPT))
                 return WALLY_EINVAL;
             script[0] = OP_DUP;
             script[1] = OP_HASH160;
@@ -1917,6 +1919,9 @@ static int generate_tr(ms_ctx *ctx, ms_node *node,
 {
     unsigned char tweaked[EC_PUBLIC_KEY_LEN];
     unsigned char pubkey[EC_PUBLIC_KEY_UNCOMPRESSED_LEN + 1];
+    unsigned char merkle_root[SHA256_LEN];
+    const unsigned char *root_ptr = NULL;
+    size_t root_len = 0;
     size_t pubkey_len = 0;
     uint32_t tweak_flags = 0;
     int ret;
@@ -1927,13 +1932,22 @@ static int generate_tr(ms_ctx *ctx, ms_node *node,
     if (ret != WALLY_OK || pubkey_len != EC_XONLY_PUBLIC_KEY_LEN + 1)
         return WALLY_EINVAL; /* Should be PUSH_32 [x-only pubkey] */
 
+    /* node->child->next == taptree */
+    if (node->child->next) {
+        ret = compute_taptree_hash(ctx, node->child->next, merkle_root);
+        if (ret != WALLY_OK)
+            return ret;
+        root_ptr = merkle_root;
+        root_len = SHA256_LEN;
+    }
+
     /* Tweak it into a compressed pubkey */
 #ifdef BUILD_ELEMENTS
     if (ctx->features & WALLY_MS_IS_ELEMENTS)
         tweak_flags = EC_FLAG_ELEMENTS;
 #endif
     ret = wally_ec_public_key_bip341_tweak(pubkey + 1, pubkey_len - 1,
-                                           NULL, 0, /* FIXME: Support script path */
+                                           root_ptr, root_len,
                                            tweak_flags, tweaked, sizeof(tweaked));
 
     if (ret == WALLY_OK && script_len >= WALLY_SCRIPTPUBKEY_P2TR_LEN) {
@@ -2299,7 +2313,8 @@ static int generate_inplace_wrappers(ms_node *node,
         default:
             return WALLY_ERROR; /* Wrapper type not found, should not happen */
         }
-        if (*written + output_len > WITNESS_SCRIPT_MAX_SIZE)
+        if (!(node->flags & WALLY_MS_IS_TAPSCRIPT) &&
+            *written + output_len > WITNESS_SCRIPT_MAX_SIZE)
             return WALLY_EINVAL;
         *written += output_len;
     }
