@@ -4667,7 +4667,7 @@ int wally_psbt_get_input_signature_hash(struct wally_psbt *psbt, size_t index,
         return WALLY_EINVAL;
 
     if (is_taproot) {
-        /* FIXME: Support script path spends */
+        /* Key-path spend: no leaf script (use wally_psbt_get_input_script_path_sighash for script-path) */
         script = NULL;
         script_len = 0;
     }
@@ -4690,6 +4690,117 @@ int wally_psbt_get_input_signature_hash(struct wally_psbt *psbt, size_t index,
     wally_free(values.items);
     if (assets_p)
         wally_free(assets_p->items);
+    return ret;
+}
+
+/* Find the leaf script in taproot_leaf_scripts whose tapleaf hash matches leaf_hash */
+static const struct wally_map_item *find_tap_leaf_script_by_hash(
+    const struct wally_psbt_input *inp,
+    const unsigned char *leaf_hash)
+{
+    const struct wally_map_item *ls;
+    unsigned char computed[SHA256_LEN];
+    unsigned char lv;
+    size_t j;
+
+    for (j = 0; j < inp->taproot_leaf_scripts.num_items; j++) {
+        ls = &inp->taproot_leaf_scripts.items[j];
+        lv = ls->key[0] & 0xfeu; /* BIP-341: leaf_version = ctrl_block[0] & 0xfe */
+        if (tapleaf_hash(lv, ls->value, ls->value_len, computed) == WALLY_OK &&
+            memcmp(computed, leaf_hash, SHA256_LEN) == 0)
+            return ls;
+    }
+    return NULL;
+}
+
+/* Compute a BIP-342 script-path sighash (bypasses the key-path forced NULL) */
+static int psbt_script_path_sighash(struct wally_psbt *psbt, size_t index,
+                                     const struct wally_tx *tx,
+                                     const unsigned char *leaf_script, size_t leaf_script_len,
+                                     uint32_t sighash,
+                                     unsigned char *bytes_out, size_t len)
+{
+    struct wally_map scripts, values;
+    int ret;
+
+    ret = get_signing_data(psbt, &scripts, NULL, &values);
+    if (ret == WALLY_OK)
+        ret = wally_tx_get_input_signature_hash(tx, index,
+                &scripts, NULL, &values,
+                leaf_script, leaf_script_len,
+                0, WALLY_NO_CODESEPARATOR, NULL, 0,
+                NULL, 0,
+                sighash, WALLY_SIGTYPE_SW_V1,
+                psbt->signing_cache, bytes_out, len);
+
+    wally_free(scripts.items);
+    wally_free(values.items);
+    return ret;
+}
+
+/* Sign a taproot script-path input for all matching leaves */
+static int psbt_sign_script_path(struct wally_psbt *psbt, size_t index,
+                                  const struct wally_tx *tx,
+                                  struct wally_psbt_input *inp,
+                                  const struct wally_map_item *lh_item,
+                                  const struct ext_key *derived)
+{
+    unsigned char sig[EC_SIGNATURE_LEN + 1];
+    unsigned char sig_key[EC_XONLY_PUBLIC_KEY_LEN + SHA256_LEN]; /* xonly || leaf_hash */
+    unsigned char txhash[WALLY_TXHASH_LEN];
+    size_t sig_len = EC_SIGNATURE_LEN;
+    size_t i, num_leaf_hashes;
+    uint32_t sighash;
+    int ret = WALLY_OK;
+
+    num_leaf_hashes = lh_item->value_len / SHA256_LEN;
+    sighash = inp->sighash;
+    if (!sighash)
+        sighash = WALLY_SIGHASH_DEFAULT;
+    else if (sighash & 0xffffff00u)
+        return WALLY_EINVAL;
+
+    /* Key for sig_key: xonly pubkey (32 bytes, from leaf_hashes map key) */
+    memcpy(sig_key, lh_item->key, EC_XONLY_PUBLIC_KEY_LEN);
+
+    for (i = 0; i < num_leaf_hashes; i++) {
+        const unsigned char *leaf_hash = lh_item->value + i * SHA256_LEN;
+        const struct wally_map_item *ls;
+
+        ls = find_tap_leaf_script_by_hash(inp, leaf_hash);
+        if (!ls)
+            continue; /* No leaf script for this hash — skip */
+
+        /* Compute script-path sighash directly (bypass the key-path NULL forced in public API) */
+        ret = psbt_script_path_sighash(psbt, index, tx,
+                                       ls->value, ls->value_len, sighash,
+                                       txhash, sizeof(txhash));
+        if (ret != WALLY_OK)
+            goto done;
+
+        /* Sign with UNTWEAKED private key */
+        ret = wally_ec_sig_from_bytes(derived->priv_key + 1, EC_PRIVATE_KEY_LEN,
+                                      txhash, sizeof(txhash),
+                                      EC_FLAG_SCHNORR,
+                                      sig, sig_len);
+        if (ret != WALLY_OK)
+            goto done;
+
+        if (sighash != WALLY_SIGHASH_DEFAULT)
+            sig[sig_len++] = sighash & 0xff;
+
+        /* Store: key = xonly_pubkey || leaf_hash */
+        memcpy(sig_key + EC_XONLY_PUBLIC_KEY_LEN, leaf_hash, SHA256_LEN);
+        ret = map_add(&inp->taproot_leaf_signatures,
+                      sig_key, sizeof(sig_key), sig, sig_len, false, true);
+        if (ret != WALLY_OK)
+            goto done;
+
+        sig_len = EC_SIGNATURE_LEN; /* Reset for next leaf */
+    }
+
+done:
+    wally_clear_2(sig, sizeof(sig), txhash, sizeof(txhash));
     return ret;
 }
 
@@ -4807,6 +4918,8 @@ int wally_psbt_sign_bip32(struct wally_psbt *psbt,
         const unsigned char *script, *scriptcode;
         size_t script_len, scriptcode_len, subindex = 0;
         struct ext_key *derived = NULL;
+        uint32_t sighash_type;
+        struct wally_psbt_input *inp;
 
         /* Get or derive a key for signing this input.
          * Note that we do not iterate subindex in this loop, so we will not
@@ -4816,6 +4929,34 @@ int wally_psbt_sign_bip32(struct wally_psbt *psbt,
                                                         0, hdkey, &derived);
         if (!derived)
             continue; /* No key to sign with */
+
+        inp = psbt_get_input_signature_type(psbt, i, &sighash_type);
+        if (!inp) {
+            bip32_key_free(derived);
+            ret = WALLY_EINVAL;
+            break;
+        }
+
+        if (sighash_type == WALLY_SIGTYPE_SW_V1 &&
+            inp->taproot_leaf_scripts.num_items > 0) {
+            /* Taproot with leaf scripts present: check if this key participates
+             * in any script-path leaves */
+            size_t pubkey_idx = 0;
+            int find_ret = wally_map_find_bip32_public_key_from(
+                &inp->taproot_leaf_hashes, subindex, derived, &pubkey_idx);
+
+            if (find_ret == WALLY_OK && pubkey_idx) {
+                const struct wally_map_item *lh_item =
+                    &inp->taproot_leaf_hashes.items[pubkey_idx - 1];
+                if (lh_item->value_len > 0) {
+                    /* Script-path: sign for each matching leaf */
+                    ret = psbt_sign_script_path(psbt, i, tx, inp, lh_item,
+                                                derived);
+                    bip32_key_free(derived);
+                    continue; /* Skip key-path signing for this input */
+                }
+            }
+        }
 
         /* Get the scriptpubkey or redeemscript */
         if (ret == WALLY_OK)
@@ -4876,6 +5017,394 @@ int wally_psbt_signing_cache_disable(struct wally_psbt *psbt)
     wally_map_free(psbt->signing_cache);
     psbt->signing_cache = NULL;
     return WALLY_OK;
+}
+
+/*
+ * Helper: build binary derivation path for a descriptor key.
+ * Returns a malloc'd uint32_t array (caller frees). *path_len is set to the number of elements.
+ */
+static int psbt_descriptor_key_binary_path(
+    const struct wally_descriptor *descriptor,
+    size_t key_index,
+    uint32_t multi_index, uint32_t child_num,
+    uint32_t **path_out, size_t *path_len_out)
+{
+    char *origin_str = NULL, *child_str = NULL;
+    size_t origin_str_len = 0, child_str_len = 0;
+    size_t origin_path_len = 0, child_path_len = 0, total_path_len = 0;
+    uint32_t *path_buf = NULL;
+    int ret;
+
+    *path_out = NULL;
+    *path_len_out = 0;
+
+    /* Get origin path string (may be empty if no origin info) */
+    ret = wally_descriptor_get_key_origin_path_str_len(descriptor, key_index,
+                                                        &origin_str_len);
+    if (ret != WALLY_OK)
+        return ret;
+
+    /* Get child path string length */
+    ret = wally_descriptor_get_key_child_path_str_len(descriptor, key_index,
+                                                       &child_str_len);
+    if (ret != WALLY_OK)
+        return ret;
+
+    if (origin_str_len) {
+        ret = wally_descriptor_get_key_origin_path_str(descriptor, key_index,
+                                                        &origin_str);
+        if (ret != WALLY_OK)
+            goto done;
+        ret = bip32_path_from_str_n_len(origin_str, origin_str_len,
+                                        0, 0, 0, &origin_path_len);
+        if (ret != WALLY_OK)
+            goto done;
+    }
+
+    if (child_str_len) {
+        ret = wally_descriptor_get_key_child_path_str(descriptor, key_index,
+                                                       &child_str);
+        if (ret != WALLY_OK)
+            goto done;
+        ret = bip32_path_from_str_n_len(child_str, child_str_len,
+                                        child_num, multi_index,
+                                        BIP32_FLAG_STR_WILDCARD | BIP32_FLAG_STR_BARE,
+                                        &child_path_len);
+        if (ret != WALLY_OK)
+            goto done;
+    }
+
+    total_path_len = origin_path_len + child_path_len;
+    if (!total_path_len) {
+        ret = WALLY_OK;
+        goto done;
+    }
+
+    if (!(path_buf = wally_malloc(total_path_len * sizeof(uint32_t)))) {
+        ret = WALLY_ENOMEM;
+        goto done;
+    }
+
+    if (origin_path_len && origin_str) {
+        ret = bip32_path_from_str_n(origin_str, origin_str_len,
+                                    0, 0, 0,
+                                    path_buf, total_path_len, &origin_path_len);
+        if (ret != WALLY_OK)
+            goto done;
+    }
+
+    if (child_path_len && child_str) {
+        ret = bip32_path_from_str_n(child_str, child_str_len,
+                                    child_num, multi_index,
+                                    BIP32_FLAG_STR_WILDCARD | BIP32_FLAG_STR_BARE,
+                                    path_buf + origin_path_len,
+                                    total_path_len - origin_path_len,
+                                    &child_path_len);
+        if (ret != WALLY_OK)
+            goto done;
+    }
+
+    *path_out = path_buf;
+    *path_len_out = origin_path_len + child_path_len;
+    path_buf = NULL;
+
+done:
+    wally_free_string(origin_str);
+    wally_free_string(child_str);
+    wally_free(path_buf);
+    return ret;
+}
+
+/* Populate TAP_BIP32_DERIVATION for all keys in a tr() descriptor's taptree */
+static int psbt_populate_taproot_keypaths_from_descriptor(
+    struct wally_psbt_input *inp,
+    const struct wally_descriptor *descriptor,
+    uint32_t multi_index, uint32_t child_num)
+{
+    uint32_t num_leaves = 0, num_desc_keys = 0, leaf_idx, num_keys, key_pos, key_idx;
+    unsigned char xonly_pub[EC_XONLY_PUBLIC_KEY_LEN];
+    unsigned char fingerprint[BIP32_KEY_FINGERPRINT_LEN];
+    uint32_t *path_buf = NULL;
+    size_t path_len = 0;
+    int ret = WALLY_OK;
+
+    if ((ret = wally_descriptor_get_taproot_num_leaves(descriptor, &num_leaves)) != WALLY_OK)
+        return ret;
+    if ((ret = wally_descriptor_get_num_keys(descriptor, &num_desc_keys)) != WALLY_OK)
+        return ret;
+
+    for (key_idx = 0; key_idx < num_desc_keys; key_idx++) {
+        /* For each descriptor-level key, collect the leaf hashes of all leaves it participates in */
+        unsigned char leaf_hash_buf[TR_MAX_MERKLE_PATH_LEN * SHA256_LEN];
+        size_t num_leaf_hashes = 0;
+        bool key_found = false;
+
+        for (leaf_idx = 0; leaf_idx < num_leaves; leaf_idx++) {
+            ret = wally_descriptor_get_taproot_leaf_num_keys(descriptor, leaf_idx, &num_keys);
+            if (ret != WALLY_OK)
+                return ret;
+
+            for (key_pos = 0; key_pos < num_keys; key_pos++) {
+                uint32_t desc_key_idx;
+                ret = wally_descriptor_get_taproot_leaf_key_index(descriptor, leaf_idx,
+                                                                   key_pos, &desc_key_idx);
+                if (ret != WALLY_OK)
+                    return ret;
+
+                if (desc_key_idx == (uint32_t)key_idx) {
+                    /* This key participates in this leaf */
+                    if (num_leaf_hashes * SHA256_LEN >= sizeof(leaf_hash_buf))
+                        return WALLY_EINVAL; /* Too many leaf hashes */
+                    ret = wally_descriptor_get_taproot_leaf_hash(
+                        descriptor, leaf_idx, 0, multi_index, child_num, 0,
+                        leaf_hash_buf + num_leaf_hashes * SHA256_LEN, SHA256_LEN);
+                    if (ret != WALLY_OK)
+                        return ret;
+                    num_leaf_hashes++;
+                    key_found = true;
+                    break; /* Key appears at most once per leaf */
+                }
+            }
+        }
+
+        if (!key_found)
+            continue; /* Key is not in any leaf (e.g. only in the internal key) */
+
+        /* Get xonly pubkey for this key at child_num */
+        ret = wally_descriptor_get_key_xonly_public_key(descriptor, key_idx,
+                                                         0, multi_index, child_num, 0,
+                                                         xonly_pub, sizeof(xonly_pub));
+        if (ret != WALLY_OK)
+            return ret;
+
+        /* Get fingerprint (use zeros if no origin info) */
+        memset(fingerprint, 0, sizeof(fingerprint));
+        (void)wally_descriptor_get_key_origin_fingerprint(descriptor, key_idx,
+                                                           fingerprint, sizeof(fingerprint));
+        /* Ignore error — if no origin, zeros are used */
+
+        /* Get full binary derivation path */
+        wally_free(path_buf);
+        path_buf = NULL;
+        path_len = 0;
+        ret = psbt_descriptor_key_binary_path(descriptor, key_idx, multi_index, child_num,
+                                              &path_buf, &path_len);
+        if (ret != WALLY_OK)
+            goto done;
+
+        /* Add TAP_BIP32_DERIVATION entry */
+        ret = wally_psbt_input_taproot_keypath_add(inp,
+                xonly_pub, sizeof(xonly_pub),
+                leaf_hash_buf, num_leaf_hashes * SHA256_LEN,
+                fingerprint, sizeof(fingerprint),
+                path_buf, path_len);
+        if (ret != WALLY_OK)
+            goto done;
+    }
+
+done:
+    wally_free(path_buf);
+    return ret;
+}
+
+int wally_psbt_input_set_taproot_from_descriptor(
+    struct wally_psbt *psbt, size_t index,
+    const struct wally_descriptor *descriptor,
+    uint32_t multi_index, uint32_t child_num, uint32_t flags)
+{
+    struct wally_psbt_input *inp;
+    unsigned char internal_key[EC_XONLY_PUBLIC_KEY_LEN];
+    unsigned char ctrl_block[1 + EC_XONLY_PUBLIC_KEY_LEN + 128 * SHA256_LEN];
+    unsigned char *leaf_script = NULL;
+    unsigned char merkle_root[SHA256_LEN];
+    uint32_t num_leaves = 0, leaf_idx;
+    size_t ctrl_len, script_len;
+    int ret;
+
+    if (!psbt || !descriptor || flags)
+        return WALLY_EINVAL;
+    if (!(inp = psbt_get_input(psbt, index)))
+        return WALLY_EINVAL;
+
+    /* Step 1: Get and set the internal key */
+    ret = wally_descriptor_get_taproot_internal_key(descriptor, 0, multi_index, child_num, 0,
+                                                     internal_key, sizeof(internal_key));
+    if (ret != WALLY_OK)
+        return ret;
+    ret = wally_psbt_input_set_taproot_internal_key(inp, internal_key, sizeof(internal_key));
+    if (ret != WALLY_OK)
+        return ret;
+
+    /* Step 2: Get number of taptree leaves */
+    ret = wally_descriptor_get_taproot_num_leaves(descriptor, &num_leaves);
+    if (ret != WALLY_OK)
+        return ret;
+
+    /* Step 3: Set TAP_MERKLE_ROOT if taptree exists */
+    if (num_leaves > 0) {
+        ret = wally_descriptor_get_taproot_merkle_root(descriptor, 0, multi_index, child_num, 0,
+                                                        merkle_root, sizeof(merkle_root));
+        if (ret != WALLY_OK)
+            return ret;
+        ret = map_field_set(&inp->psbt_fields, PSBT_IN_TAP_MERKLE_ROOT,
+                             merkle_root, sizeof(merkle_root));
+        if (ret != WALLY_OK)
+            return ret;
+    }
+
+    /* Step 4: Add TAP_LEAF_SCRIPT for each leaf */
+    for (leaf_idx = 0; leaf_idx < num_leaves; leaf_idx++) {
+        ctrl_len = 0;
+        script_len = 0;
+
+        /* Get control block (query size first) */
+        ret = wally_descriptor_get_taproot_control_block(descriptor, leaf_idx,
+                0, multi_index, child_num, 0,
+                NULL, 0, &ctrl_len);
+        if (ret != WALLY_OK)
+            return ret;
+        if (ctrl_len > sizeof(ctrl_block))
+            return WALLY_EINVAL;
+        ret = wally_descriptor_get_taproot_control_block(descriptor, leaf_idx,
+                0, multi_index, child_num, 0,
+                ctrl_block, ctrl_len, &ctrl_len);
+        if (ret != WALLY_OK)
+            return ret;
+
+        /* Get leaf script (query size first, then allocate dynamically) */
+        ret = wally_descriptor_get_taproot_leaf_script(descriptor, leaf_idx,
+                0, multi_index, child_num, 0,
+                NULL, 0, &script_len);
+        if (ret != WALLY_OK)
+            return ret;
+        leaf_script = wally_malloc(script_len ? script_len : 1);
+        if (!leaf_script)
+            return WALLY_ENOMEM;
+        ret = wally_descriptor_get_taproot_leaf_script(descriptor, leaf_idx,
+                0, multi_index, child_num, 0,
+                leaf_script, script_len, &script_len);
+        if (ret != WALLY_OK) {
+            wally_free(leaf_script);
+            leaf_script = NULL;
+            return ret;
+        }
+
+        ret = wally_psbt_input_add_taproot_leaf_script(inp,
+                ctrl_block, ctrl_len, leaf_script, script_len);
+        wally_free(leaf_script);
+        leaf_script = NULL;
+        if (ret != WALLY_OK)
+            return ret;
+    }
+
+    /* Step 5: Add TAP_BIP32_DERIVATION for each key in the taptree */
+    if (num_leaves > 0)
+        ret = psbt_populate_taproot_keypaths_from_descriptor(inp, descriptor,
+                                                             multi_index, child_num);
+    return ret;
+}
+
+int wally_psbt_output_set_taproot_from_descriptor(
+    struct wally_psbt *psbt, size_t index,
+    const struct wally_descriptor *descriptor,
+    uint32_t multi_index, uint32_t child_num, uint32_t flags)
+{
+    struct wally_psbt_output *outp;
+    unsigned char internal_key[EC_XONLY_PUBLIC_KEY_LEN];
+    unsigned char xonly_pub[EC_XONLY_PUBLIC_KEY_LEN];
+    unsigned char fingerprint[BIP32_KEY_FINGERPRINT_LEN];
+    unsigned char leaf_hash_buf[TR_MAX_MERKLE_PATH_LEN * SHA256_LEN];
+    uint32_t *path_buf = NULL;
+    size_t path_len = 0, num_leaf_hashes;
+    uint32_t num_leaves = 0, leaf_idx, num_keys, key_pos;
+    uint32_t num_desc_keys_out = 0, key_idx, desc_key_idx;
+    bool key_found;
+    int ret;
+
+    if (!psbt || !descriptor || flags)
+        return WALLY_EINVAL;
+    if (!(outp = psbt_get_output(psbt, index)))
+        return WALLY_EINVAL;
+
+    /* Set TAP_INTERNAL_KEY */
+    ret = wally_descriptor_get_taproot_internal_key(descriptor, 0, multi_index, child_num, 0,
+                                                     internal_key, sizeof(internal_key));
+    if (ret != WALLY_OK)
+        return ret;
+    ret = wally_psbt_output_set_taproot_internal_key(outp, internal_key, sizeof(internal_key));
+    if (ret != WALLY_OK)
+        return ret;
+
+    /* Get number of leaves for TAP_BIP32_DERIVATION */
+    ret = wally_descriptor_get_taproot_num_leaves(descriptor, &num_leaves);
+    if (ret != WALLY_OK)
+        return ret;
+
+    /* Add TAP_BIP32_DERIVATION for each key across all leaves */
+    ret = wally_descriptor_get_num_keys(descriptor, &num_desc_keys_out);
+    if (ret != WALLY_OK)
+        return ret;
+    for (key_idx = 0; key_idx < num_desc_keys_out; key_idx++) {
+        num_leaf_hashes = 0;
+        key_found = false;
+
+        for (leaf_idx = 0; leaf_idx < num_leaves; leaf_idx++) {
+            ret = wally_descriptor_get_taproot_leaf_num_keys(descriptor, leaf_idx, &num_keys);
+            if (ret != WALLY_OK)
+                return ret;
+
+            for (key_pos = 0; key_pos < num_keys; key_pos++) {
+                ret = wally_descriptor_get_taproot_leaf_key_index(descriptor, leaf_idx,
+                                                                   key_pos, &desc_key_idx);
+                if (ret != WALLY_OK)
+                    return ret;
+                if (desc_key_idx == (uint32_t)key_idx) {
+                    if (num_leaf_hashes * SHA256_LEN >= sizeof(leaf_hash_buf))
+                        return WALLY_EINVAL;
+                    ret = wally_descriptor_get_taproot_leaf_hash(
+                        descriptor, leaf_idx, 0, multi_index, child_num, 0,
+                        leaf_hash_buf + num_leaf_hashes * SHA256_LEN, SHA256_LEN);
+                    if (ret != WALLY_OK)
+                        return ret;
+                    num_leaf_hashes++;
+                    key_found = true;
+                    break;
+                }
+            }
+        }
+
+        if (!key_found)
+            continue;
+
+        ret = wally_descriptor_get_key_xonly_public_key(descriptor, key_idx,
+                0, multi_index, child_num, 0, xonly_pub, sizeof(xonly_pub));
+        if (ret != WALLY_OK)
+            return ret;
+
+        memset(fingerprint, 0, sizeof(fingerprint));
+        (void)wally_descriptor_get_key_origin_fingerprint(descriptor, key_idx,
+                                                           fingerprint, sizeof(fingerprint));
+
+        wally_free(path_buf);
+        path_buf = NULL;
+        path_len = 0;
+        ret = psbt_descriptor_key_binary_path(descriptor, key_idx, multi_index, child_num,
+                                              &path_buf, &path_len);
+        if (ret != WALLY_OK)
+            goto done;
+
+        ret = wally_psbt_output_taproot_keypath_add(outp,
+                xonly_pub, sizeof(xonly_pub),
+                leaf_hash_buf, num_leaf_hashes * SHA256_LEN,
+                fingerprint, sizeof(fingerprint),
+                path_buf, path_len);
+        if (ret != WALLY_OK)
+            goto done;
+    }
+
+done:
+    wally_free(path_buf);
+    return ret;
 }
 
 static const struct wally_map_item *get_sig(const struct wally_psbt_input *input,

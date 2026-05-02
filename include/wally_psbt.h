@@ -538,6 +538,47 @@ WALLY_CORE_API int wally_psbt_input_set_required_lockheight(
 WALLY_CORE_API int wally_psbt_input_clear_required_lockheight(
     struct wally_psbt_input *input);
 
+/**
+ * Populate taproot PSBT input fields from a tr() descriptor.
+ *
+ * Sets TAP_INTERNAL_KEY, TAP_LEAF_SCRIPT entries, TAP_BIP32_DERIVATION
+ * entries, and TAP_MERKLE_ROOT on the given input. Does not sign.
+ *
+ * :param psbt: The PSBT to update.
+ * :param index: The input index to populate.
+ * :param descriptor: A parsed tr() descriptor.
+ * :param multi_index: Multi-path index for descriptor derivation.
+ * :param child_num: BIP-32 child derivation index for variable keys.
+ * :param flags: Must be zero.
+ */
+WALLY_CORE_API int wally_psbt_input_set_taproot_from_descriptor(
+    struct wally_psbt *psbt,
+    size_t index,
+    const struct wally_descriptor *descriptor,
+    uint32_t multi_index,
+    uint32_t child_num,
+    uint32_t flags);
+
+/**
+ * Populate taproot PSBT output fields from a tr() descriptor.
+ *
+ * Sets TAP_INTERNAL_KEY and TAP_BIP32_DERIVATION entries on the given output.
+ *
+ * :param psbt: The PSBT to update.
+ * :param index: The output index to populate.
+ * :param descriptor: A parsed tr() descriptor.
+ * :param multi_index: Multi-path index for descriptor derivation.
+ * :param child_num: BIP-32 child derivation index for variable keys.
+ * :param flags: Must be zero.
+ */
+WALLY_CORE_API int wally_psbt_output_set_taproot_from_descriptor(
+    struct wally_psbt *psbt,
+    size_t index,
+    const struct wally_descriptor *descriptor,
+    uint32_t multi_index,
+    uint32_t child_num,
+    uint32_t flags);
+
 #ifndef WALLY_ABI_NO_ELEMENTS
 /**
  * Set the unblinded amount in an input.
