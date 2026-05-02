@@ -13,6 +13,66 @@ static size_t witness_weight(const ms_witness *w)
     return total;
 }
 
+/* Weight delta (sat - dissat) for sorting thresh candidates.
+ * Returns INT64_MAX when sat is unavailable/impossible (avoid choosing).
+ * Returns INT64_MIN when dissat is unavailable/impossible (prefer choosing). */
+static int64_t thresh_weight_delta(const ms_satisfaction *sat, const ms_satisfaction *dsat)
+{
+    if (sat->witness.kind == MS_WITNESS_IMPOSSIBLE ||
+        sat->witness.kind == MS_WITNESS_UNAVAILABLE)
+        return INT64_MAX;
+    if (dsat->witness.kind == MS_WITNESS_IMPOSSIBLE ||
+        dsat->witness.kind == MS_WITNESS_UNAVAILABLE)
+        return INT64_MIN;
+    return (int64_t)witness_weight(&sat->witness) -
+           (int64_t)witness_weight(&dsat->witness);
+}
+
+/* Non-malleable sort key: (is_impossible, has_sig, weight_delta) ascending */
+static int thresh_cmp_full(size_t ia, size_t ib,
+                           const ms_satisfaction *sats,
+                           const ms_satisfaction *dissats)
+{
+    int imp_a = (sats[ia].witness.kind == MS_WITNESS_IMPOSSIBLE) ? 1 : 0;
+    int imp_b = (sats[ib].witness.kind == MS_WITNESS_IMPOSSIBLE) ? 1 : 0;
+    if (imp_a != imp_b) return imp_a - imp_b;
+    int sig_a = sats[ia].has_sig ? 1 : 0;
+    int sig_b = sats[ib].has_sig ? 1 : 0;
+    if (sig_a != sig_b) return sig_a - sig_b;
+    int64_t wa = thresh_weight_delta(&sats[ia], &dissats[ia]);
+    int64_t wb = thresh_weight_delta(&sats[ib], &dissats[ib]);
+    return (wa > wb) - (wa < wb);
+}
+
+/* Malleable sort key: weight_delta only */
+static int thresh_cmp_mall(size_t ia, size_t ib,
+                           const ms_satisfaction *sats,
+                           const ms_satisfaction *dissats)
+{
+    int64_t wa = thresh_weight_delta(&sats[ia], &dissats[ia]);
+    int64_t wb = thresh_weight_delta(&sats[ib], &dissats[ib]);
+    return (wa > wb) - (wa < wb);
+}
+
+/* Insertion sort on index array (ascending) */
+static void thresh_sort(size_t *indices, size_t n,
+                        const ms_satisfaction *sats,
+                        const ms_satisfaction *dissats, int mall)
+{
+    for (size_t i = 1; i < n; i++) {
+        size_t key = indices[i];
+        size_t j = i;
+        while (j > 0) {
+            int cmp = mall ? thresh_cmp_mall(indices[j - 1], key, sats, dissats)
+                           : thresh_cmp_full(indices[j - 1], key, sats, dissats);
+            if (cmp <= 0) break;
+            indices[j] = indices[j - 1];
+            j--;
+        }
+        indices[j] = key;
+    }
+}
+
 /*
  * Select the non-malleable minimum-weight satisfaction between a and b.
  * Both a and b are consumed by this call; the caller must not use them
@@ -372,4 +432,140 @@ void satisfaction_andor(ms_satisfaction sat_x, ms_satisfaction dissat_x,
     *sat_out = satisfaction_best(
         satisfaction_concat(sat_y, sat_x),
         satisfaction_concat(sat_z, dissat_x));
+}
+
+/*
+ * thresh(k, X1, ..., Xn) malleable satisfaction and dissatisfaction.
+ *
+ * Consumes every element in sats[] and dissats[].
+ * Mirrors rust-miniscript Satisfaction::thresh_mall.
+ */
+void satisfaction_thresh_mall(size_t k, size_t n,
+                              ms_satisfaction *sats,
+                              ms_satisfaction *dissats,
+                              ms_satisfaction *sat_out,
+                              ms_satisfaction *dissat_out)
+{
+    size_t i;
+
+    /* 1. Compute dissat_out from clones of original dissats */
+    ms_satisfaction dsat_acc;
+    ms_satisfaction_init(&dsat_acc, MS_WITNESS_STACK);
+    for (i = 0; i < n; i++) {
+        ms_satisfaction cl = ms_satisfaction_clone(&dissats[i]);
+        dsat_acc = satisfaction_concat(cl, dsat_acc);
+    }
+    *dissat_out = dsat_acc;
+
+    /* 2. Build and sort index array by weight delta (malleable) */
+    size_t *indices = wally_malloc(n * sizeof(size_t));
+    if (!indices) {
+        for (i = 0; i < n; i++) {
+            ms_satisfaction_free(&sats[i]);
+            ms_satisfaction_free(&dissats[i]);
+        }
+        ms_satisfaction_init(sat_out, MS_WITNESS_IMPOSSIBLE);
+        return;
+    }
+    for (i = 0; i < n; i++) indices[i] = i;
+    thresh_sort(indices, n, sats, dissats, 1);
+
+    /* 3. Swap first k: dissats[indices[i]] gets the chosen sat */
+    for (i = 0; i < k; i++) {
+        ms_satisfaction tmp = dissats[indices[i]];
+        dissats[indices[i]] = sats[indices[i]];
+        sats[indices[i]] = tmp;
+    }
+
+    /* 4. Free the leftover sats[] entries (unchosen sats + swapped-out dissats) */
+    for (i = 0; i < n; i++) ms_satisfaction_free(&sats[i]);
+
+    /* 5. Fold dissats[] (now ret_stack) for sat_out */
+    ms_satisfaction sat_acc;
+    ms_satisfaction_init(&sat_acc, MS_WITNESS_STACK);
+    for (i = 0; i < n; i++)
+        sat_acc = satisfaction_concat(dissats[i], sat_acc);
+    *sat_out = sat_acc;
+
+    wally_free(indices);
+}
+
+/*
+ * thresh(k, X1, ..., Xn) non-malleable satisfaction and dissatisfaction.
+ *
+ * Consumes every element in sats[] and dissats[].
+ * Mirrors rust-miniscript Satisfaction::thresh.
+ */
+void satisfaction_thresh(size_t k, size_t n,
+                         ms_satisfaction *sats,
+                         ms_satisfaction *dissats,
+                         ms_satisfaction *sat_out,
+                         ms_satisfaction *dissat_out)
+{
+    size_t i;
+
+    /* 1. Compute dissat_out from clones of original dissats */
+    ms_satisfaction dsat_acc;
+    ms_satisfaction_init(&dsat_acc, MS_WITNESS_STACK);
+    for (i = 0; i < n; i++) {
+        ms_satisfaction cl = ms_satisfaction_clone(&dissats[i]);
+        dsat_acc = satisfaction_concat(cl, dsat_acc);
+    }
+    *dissat_out = dsat_acc;
+
+    /* 2. Build and sort index array with non-malleable key */
+    size_t *indices = wally_malloc(n * sizeof(size_t));
+    if (!indices) {
+        for (i = 0; i < n; i++) {
+            ms_satisfaction_free(&sats[i]);
+            ms_satisfaction_free(&dissats[i]);
+        }
+        ms_satisfaction_init(sat_out, MS_WITNESS_IMPOSSIBLE);
+        return;
+    }
+    for (i = 0; i < n; i++) indices[i] = i;
+    thresh_sort(indices, n, sats, dissats, 0);
+
+    /* 3. Swap first k: dissats[indices[i]] gets the chosen sat */
+    for (i = 0; i < k; i++) {
+        ms_satisfaction tmp = dissats[indices[i]];
+        dissats[indices[i]] = sats[indices[i]];
+        sats[indices[i]] = tmp;
+    }
+
+    /* 4. Malleability check A: if k-th chosen's original dissat is Impossible,
+     *    we could not find k non-impossible satisfactions — overall impossible. */
+    if (sats[indices[k - 1]].witness.kind == MS_WITNESS_IMPOSSIBLE) {
+        for (i = 0; i < n; i++) {
+            ms_satisfaction_free(&sats[i]);
+            ms_satisfaction_free(&dissats[i]);
+        }
+        wally_free(indices);
+        ms_satisfaction_init(sat_out, MS_WITNESS_IMPOSSIBLE);
+        return;
+    }
+
+    /* 5. Malleability check B: if the first unchosen element's original sat is
+     *    not impossible and has no sig, a third party can malleate — unavailable. */
+    if (k < n &&
+        sats[indices[k]].witness.kind != MS_WITNESS_IMPOSSIBLE &&
+        !sats[indices[k]].has_sig) {
+        for (i = 0; i < n; i++) {
+            ms_satisfaction_free(&sats[i]);
+            ms_satisfaction_free(&dissats[i]);
+        }
+        wally_free(indices);
+        ms_satisfaction_init(sat_out, MS_WITNESS_UNAVAILABLE);
+        return;
+    }
+
+    /* 6. Free leftover sats[], fold dissats[] (ret_stack) for sat_out */
+    for (i = 0; i < n; i++) ms_satisfaction_free(&sats[i]);
+    ms_satisfaction sat_acc;
+    ms_satisfaction_init(&sat_acc, MS_WITNESS_STACK);
+    for (i = 0; i < n; i++)
+        sat_acc = satisfaction_concat(dissats[i], sat_acc);
+    *sat_out = sat_acc;
+
+    wally_free(indices);
 }
