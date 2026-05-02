@@ -113,6 +113,16 @@ typedef struct ms_satisfier_t {
     bool (*lookup_sig)(const struct ms_satisfier_t *stfr,
                        const unsigned char *pk, size_t pk_len,
                        unsigned char *sig_out, size_t *sig_len_out);
+    /* For pk_h fragments: given the 20-byte HASH160, resolve the public key and
+     * (when available) a signature. On return: pk_out/pk_len_out are always set
+     * when the function returns true; *sig_len_out > 0 only when a signature is
+     * also available. Returns false when the public key is unknown, which maps to
+     * MS_WITNESS_IMPOSSIBLE for sat and MS_WITNESS_UNAVAILABLE for dissat. May be NULL if no pk_h
+     * fragments are expected. */
+    bool (*lookup_pkh)(const struct ms_satisfier_t *stfr,
+                       const unsigned char *hash20,
+                       unsigned char *pk_out,  size_t *pk_len_out,
+                       unsigned char *sig_out, size_t *sig_len_out);
     /* Write the 32-byte preimage of hash into preimage_out. hash_type = MS_HASH_*. */
     bool (*lookup_preimage)(const struct ms_satisfier_t *stfr,
                             const unsigned char *hash, size_t hash_len,

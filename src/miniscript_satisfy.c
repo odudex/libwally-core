@@ -648,8 +648,54 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
             ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
             break;
 
-        case KIND_MINISCRIPT_PK_K:
-        case KIND_MINISCRIPT_PK_H:
+        case KIND_MINISCRIPT_PK_K: {
+            unsigned char sig_buf[73];
+            size_t sig_len = 0;
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            ms_satisfaction_init(&entry.dissat, MS_WITNESS_STACK);
+            entry.dissat = satisfaction_push_item(entry.dissat, NULL, 0);
+            if (stfr && stfr->lookup_sig &&
+                stfr->lookup_sig(stfr, (const unsigned char *)n->data,
+                                 n->data_len, sig_buf, &sig_len)) {
+                ms_satisfaction_init(&entry.sat, MS_WITNESS_STACK);
+                entry.sat = satisfaction_push_item(entry.sat, sig_buf, sig_len);
+                entry.sat.has_sig = true;
+            } else {
+                ms_satisfaction_init(&entry.sat, MS_WITNESS_IMPOSSIBLE);
+            }
+            break;
+        }
+
+        case KIND_MINISCRIPT_PK_H: {
+            unsigned char pk_buf[65];
+            unsigned char sig_buf[73];
+            size_t pk_len = 0, sig_len = 0;
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            if (stfr && stfr->lookup_pkh &&
+                stfr->lookup_pkh(stfr, (const unsigned char *)n->data,
+                                 pk_buf, &pk_len, sig_buf, &sig_len)) {
+                /* dissat: [0, pubkey] */
+                ms_satisfaction_init(&entry.dissat, MS_WITNESS_STACK);
+                entry.dissat = satisfaction_push_item(entry.dissat, NULL, 0);
+                entry.dissat = satisfaction_push_item(entry.dissat, pk_buf, pk_len);
+                /* sat: [sig, pubkey] or IMPOSSIBLE if no sig */
+                if (sig_len > 0) {
+                    ms_satisfaction_init(&entry.sat, MS_WITNESS_STACK);
+                    entry.sat = satisfaction_push_item(entry.sat, sig_buf, sig_len);
+                    entry.sat = satisfaction_push_item(entry.sat, pk_buf, pk_len);
+                    entry.sat.has_sig = true;
+                } else {
+                    ms_satisfaction_init(&entry.sat, MS_WITNESS_IMPOSSIBLE);
+                }
+            } else {
+                ms_satisfaction_init(&entry.sat,    MS_WITNESS_IMPOSSIBLE);
+                ms_satisfaction_init(&entry.dissat, MS_WITNESS_UNAVAILABLE);
+            }
+            break;
+        }
+
         case KIND_MINISCRIPT_PK:
         case KIND_MINISCRIPT_PKH:
         case KIND_MINISCRIPT_OLDER:
