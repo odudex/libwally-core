@@ -5,6 +5,54 @@
 #include <string.h>
 #include "script_int.h"
 
+struct terminal_stack_t {
+    ms_node **nodes;
+    size_t len;
+    size_t cap;
+};
+
+terminal_stack_t *terminal_stack_new(size_t capacity)
+{
+    terminal_stack_t *s = wally_malloc(sizeof(*s));
+    if (!s) return NULL;
+    s->nodes = wally_malloc(capacity * sizeof(ms_node *));
+    if (!s->nodes) { wally_free(s); return NULL; }
+    s->len = 0;
+    s->cap = capacity;
+    return s;
+}
+
+void terminal_stack_free(terminal_stack_t *s)
+{
+    if (s) { wally_free(s->nodes); wally_free(s); }
+}
+
+int terminal_stack_push(terminal_stack_t *s, ms_node *node)
+{
+    if (s->len == s->cap) {
+        size_t new_cap = s->cap ? s->cap * 2 : 1;
+        ms_node **new_nodes = wally_malloc(new_cap * sizeof(ms_node *));
+        if (!new_nodes) return WALLY_ENOMEM;
+        memcpy(new_nodes, s->nodes, s->len * sizeof(ms_node *));
+        wally_free(s->nodes);
+        s->nodes = new_nodes;
+        s->cap = new_cap;
+    }
+    s->nodes[s->len++] = node;
+    return WALLY_OK;
+}
+
+ms_node *terminal_stack_pop(terminal_stack_t *s)
+{
+    if (s->len == 0) return NULL;
+    return s->nodes[--s->len];
+}
+
+size_t terminal_stack_size(const terminal_stack_t *s)
+{
+    return s->len;
+}
+
 int tokenize_script(const unsigned char *script, size_t script_len,
                     token_t *tokens, size_t max_tokens, size_t *out_count)
 {

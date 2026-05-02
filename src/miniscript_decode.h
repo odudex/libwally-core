@@ -2,6 +2,7 @@
 #define LIBWALLY_MINISCRIPT_DECODE_H
 
 #include "config.h"
+#include "descriptor_int.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -64,6 +65,44 @@ typedef struct token_t {
 int tokenize_script(const unsigned char *script, size_t script_len,
                     token_t *tokens, size_t max_tokens,
                     size_t *out_count);
+
+typedef enum {
+    NT_EXPRESSION,
+    NT_W_EXPRESSION,
+    NT_SWAP,
+    NT_MAYBE_AND_V,
+    NT_ALT,
+    NT_CHECK,
+    NT_DUP_IF,
+    NT_VERIFY,
+    NT_NON_ZERO,
+    NT_ZERO_NOT_EQUAL,
+    NT_AND_V,
+    NT_AND_B,
+    NT_TERN,
+    NT_OR_B,
+    NT_OR_D,
+    NT_OR_C,
+    NT_THRESH_W,   /* carries k, n */
+    NT_THRESH_E,   /* carries k, n */
+    NT_END_IF,
+    NT_END_IF_NOT_IF,
+    NT_END_IF_ELSE,
+} nonterm_kind;
+
+typedef struct nonterm_t {
+    nonterm_kind kind;
+    uint32_t k;   /* used by NT_THRESH_W / NT_THRESH_E */
+    uint32_t n;
+} nonterm_t;
+
+typedef struct terminal_stack_t terminal_stack_t;
+
+terminal_stack_t *terminal_stack_new(size_t capacity);
+void terminal_stack_free(terminal_stack_t *s);
+int terminal_stack_push(terminal_stack_t *s, ms_node *node);
+ms_node *terminal_stack_pop(terminal_stack_t *s);
+size_t terminal_stack_size(const terminal_stack_t *s);
 
 #ifdef __cplusplus
 }
