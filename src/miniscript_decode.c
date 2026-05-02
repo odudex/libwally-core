@@ -2,6 +2,7 @@
 #include "miniscript_decode.h"
 #include <include/wally_core.h>
 #include <include/wally_script.h>
+#include <string.h>
 
 int tokenize_script(const unsigned char *script, size_t script_len,
                     token_t *tokens, size_t max_tokens, size_t *out_count)
@@ -11,13 +12,69 @@ int tokenize_script(const unsigned char *script, size_t script_len,
     for (i = 0; i < script_len; ++i) {
         unsigned char op = script[i];
 
-        /* Push-data and numeric-push bytes — handled in phases 7-8 */
-        if (op == OP_0 || op == OP_1NEGATE)
+        if (op == OP_0) {
+            if (n >= max_tokens) return WALLY_EINVAL;
+            tokens[n].kind = TK_NUM;
+            tokens[n++].data.num = 0;
+            continue;
+        }
+        if (op == OP_1NEGATE)
             return WALLY_EINVAL;
-        if (op >= 0x01 && op <= OP_PUSHDATA4)
-            return WALLY_EINVAL;
-        if (op >= OP_1 && op <= OP_16)
-            return WALLY_EINVAL;
+        if (op >= OP_1 && op <= OP_16) {
+            if (n >= max_tokens) return WALLY_EINVAL;
+            tokens[n].kind = TK_NUM;
+            tokens[n++].data.num = (uint32_t)(op - OP_1 + 1);
+            continue;
+        }
+        if (op >= 0x01 && op <= OP_PUSHDATA4) {
+            size_t data_len;
+            const unsigned char *data;
+
+            if (op < OP_PUSHDATA1) {
+                data_len = op;
+                if (i + 1 + data_len > script_len) return WALLY_EINVAL;
+                data = script + i + 1;
+                i += data_len;
+            } else if (op == OP_PUSHDATA1) {
+                if (i + 1 >= script_len) return WALLY_EINVAL;
+                data_len = script[i + 1];
+                if (i + 2 + data_len > script_len) return WALLY_EINVAL;
+                data = script + i + 2;
+                i += 1 + data_len;
+            } else if (op == OP_PUSHDATA2) {
+                if (i + 2 >= script_len) return WALLY_EINVAL;
+                data_len = (size_t)script[i + 1] | ((size_t)script[i + 2] << 8);
+                if (i + 3 + data_len > script_len) return WALLY_EINVAL;
+                data = script + i + 3;
+                i += 2 + data_len;
+            } else { /* OP_PUSHDATA4 */
+                if (i + 4 >= script_len) return WALLY_EINVAL;
+                data_len = (size_t)script[i + 1] | ((size_t)script[i + 2] << 8) |
+                           ((size_t)script[i + 3] << 16) | ((size_t)script[i + 4] << 24);
+                if (i + 5 + data_len > script_len) return WALLY_EINVAL;
+                data = script + i + 5;
+                i += 4 + data_len;
+            }
+
+            if (n >= max_tokens) return WALLY_EINVAL;
+            if (data_len == 20) {
+                tokens[n].kind = TK_HASH20;
+                memcpy(tokens[n].data.hash20, data, 20);
+            } else if (data_len == 32) {
+                tokens[n].kind = TK_BYTES32;
+                memcpy(tokens[n].data.bytes32, data, 32);
+            } else if (data_len == 33) {
+                tokens[n].kind = TK_BYTES33;
+                memcpy(tokens[n].data.bytes33, data, 33);
+            } else if (data_len == 65) {
+                tokens[n].kind = TK_BYTES65;
+                memcpy(tokens[n].data.bytes65, data, 65);
+            } else {
+                return WALLY_EINVAL; /* script numbers deferred to phase 8 */
+            }
+            n++;
+            continue;
+        }
 
         switch (op) {
         case OP_BOOLAND:
