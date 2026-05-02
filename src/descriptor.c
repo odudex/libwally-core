@@ -4290,6 +4290,166 @@ cleanup:
     return ret;
 }
 
+int wally_descriptor_get_taproot_control_block(
+    const struct wally_descriptor *descriptor,
+    uint32_t leaf_index,
+    uint32_t variant, uint32_t multi_index,
+    uint32_t child_num, uint32_t flags,
+    unsigned char *bytes_out, size_t len, size_t *written)
+{
+    ms_ctx ctx;
+    unsigned char pubkey[EC_XONLY_PUBLIC_KEY_LEN + 1]; /* PUSH_32 + x-only key */
+    unsigned char tweaked[EC_PUBLIC_KEY_LEN];
+    unsigned char *path_buf = NULL;
+    unsigned char merkle_root[SHA256_LEN];
+    ms_node *taptree;
+    uint32_t path_len = 0;
+    size_t pubkey_len = 0, cb_size;
+    int ret;
+
+    if (written)
+        *written = 0;
+    if (!descriptor || !written || flags)
+        return WALLY_EINVAL;
+    if (descriptor->top_node->kind != KIND_DESCRIPTOR_TR ||
+        variant >= descriptor->num_variants ||
+        child_num >= BIP32_INITIAL_HARDENED_CHILD ||
+        multi_index >= descriptor->num_multipaths)
+        return WALLY_EINVAL;
+    if (!descriptor->top_node->child)
+        return WALLY_ERROR; /* tr() with no internal key — corrupt AST */
+    taptree = descriptor->top_node->child->next;
+    if (!taptree)
+        return WALLY_EINVAL; /* key-only tr() has no control block */
+    if (leaf_index >= count_taptree_leaves(taptree))
+        return WALLY_EINVAL;
+
+    memcpy(&ctx, descriptor, sizeof(ctx));
+    ctx.variant = variant;
+    ctx.child_num = child_num;
+    ctx.multi_index = multi_index;
+    ctx.path_buff = NULL;
+    if (ctx.max_path_elems &&
+        !(ctx.path_buff = wally_malloc(ctx.max_path_elems * sizeof(uint32_t))))
+        return WALLY_ENOMEM;
+
+    path_buf = wally_malloc(128 * SHA256_LEN);
+    if (!path_buf) {
+        ret = WALLY_ENOMEM;
+        goto cleanup;
+    }
+
+    /* Extract x-only internal key: generates PUSH_32 [x-only key] */
+    /* descriptor->top_node->parent == NULL so node_is_root() passes */
+    ret = generate_pk_k_impl(&ctx, descriptor->top_node, pubkey, sizeof(pubkey),
+                             true /* force_xonly */, &pubkey_len);
+    if (ret != WALLY_OK || pubkey_len != EC_XONLY_PUBLIC_KEY_LEN + 1) {
+        ret = WALLY_EINVAL;
+        goto cleanup;
+    }
+
+    /* Collect merkle path for target leaf */
+    ret = collect_merkle_path(&ctx, taptree, leaf_index,
+                              path_buf, &path_len, merkle_root);
+    if (ret != WALLY_OK)
+        goto cleanup;
+
+    /* Tweak to get parity bit */
+    ret = wally_ec_public_key_bip341_tweak(pubkey + 1, EC_XONLY_PUBLIC_KEY_LEN,
+                                           merkle_root, SHA256_LEN,
+                                           0, tweaked, sizeof(tweaked));
+    if (ret != WALLY_OK)
+        goto cleanup;
+
+    cb_size = 1u + EC_XONLY_PUBLIC_KEY_LEN + (size_t)path_len * SHA256_LEN;
+    *written = cb_size;
+    if (bytes_out && len >= cb_size) {
+        bytes_out[0] = (unsigned char)(0xc0 | (tweaked[0] == 0x03 ? 1 : 0));
+        memcpy(bytes_out + 1, pubkey + 1, EC_XONLY_PUBLIC_KEY_LEN);
+        if (path_len)
+            memcpy(bytes_out + 1 + EC_XONLY_PUBLIC_KEY_LEN, path_buf,
+                   (size_t)path_len * SHA256_LEN);
+    }
+
+cleanup:
+    wally_free(path_buf);
+    wally_free(ctx.path_buff);
+    return ret;
+}
+
+int wally_descriptor_get_taproot_leaf_num_keys(
+    const struct wally_descriptor *descriptor,
+    uint32_t leaf_index,
+    uint32_t *value_out)
+{
+    ms_node *taptree, *leaf;
+
+    if (value_out)
+        *value_out = 0;
+    if (!descriptor || !value_out)
+        return WALLY_EINVAL;
+    if (descriptor->top_node->kind != KIND_DESCRIPTOR_TR)
+        return WALLY_EINVAL;
+    if (!descriptor->top_node->child)
+        return WALLY_ERROR; /* tr() with no internal key — corrupt AST */
+    taptree = descriptor->top_node->child->next;
+    if (!taptree)
+        return WALLY_EINVAL;
+    if (leaf_index >= count_taptree_leaves(taptree))
+        return WALLY_EINVAL;
+
+    leaf = find_taptree_leaf(taptree, leaf_index);
+    if (!leaf)
+        return WALLY_EINVAL;
+
+    *value_out = count_keys_in_subtree(leaf);
+    return WALLY_OK;
+}
+
+int wally_descriptor_get_taproot_leaf_key_index(
+    const struct wally_descriptor *descriptor,
+    uint32_t leaf_index,
+    uint32_t key_position,
+    uint32_t *value_out)
+{
+    ms_node *taptree, *leaf, *key_node;
+    size_t i;
+
+    if (value_out)
+        *value_out = 0;
+    if (!descriptor || !value_out)
+        return WALLY_EINVAL;
+    if (descriptor->top_node->kind != KIND_DESCRIPTOR_TR)
+        return WALLY_EINVAL;
+    if (!descriptor->top_node->child)
+        return WALLY_ERROR; /* tr() with no internal key — corrupt AST */
+    taptree = descriptor->top_node->child->next;
+    if (!taptree)
+        return WALLY_EINVAL;
+    if (leaf_index >= count_taptree_leaves(taptree))
+        return WALLY_EINVAL;
+
+    leaf = find_taptree_leaf(taptree, leaf_index);
+    if (!leaf)
+        return WALLY_EINVAL;
+
+    if (key_position >= count_keys_in_subtree(leaf))
+        return WALLY_EINVAL;
+
+    key_node = find_nth_key_in_subtree(leaf, key_position);
+    if (!key_node)
+        return WALLY_EINVAL;
+
+    /* Map key node pointer to descriptor-level key index */
+    for (i = 0; i < descriptor->keys.num_items; i++) {
+        if ((ms_node *)descriptor->keys.items[i].value == key_node) {
+            *value_out = (uint32_t)i;
+            return WALLY_OK;
+        }
+    }
+    return WALLY_EINVAL; /* key not found in map (should not happen) */
+}
+
 int wally_descriptor_get_taproot_internal_key(
     const struct wally_descriptor *descriptor,
     uint32_t variant, uint32_t multi_index, uint32_t child_num, uint32_t flags,

@@ -408,6 +408,12 @@ WALLY_CORE_API int wally_descriptor_to_addresses(
     char **output,
     size_t num_outputs);
 
+/**
+ * Get the number of taptree leaves in a tr() descriptor.
+ *
+ * :param descriptor: Parsed tr() output descriptor.
+ * :param value_out: Destination for the number of taptree leaves.
+ */
 WALLY_CORE_API int wally_descriptor_get_taproot_num_leaves(
     const struct wally_descriptor *descriptor,
     uint32_t *value_out);
@@ -457,6 +463,60 @@ WALLY_CORE_API int wally_descriptor_get_taproot_leaf_hash(
     uint32_t flags,
     unsigned char *bytes_out,
     size_t len);
+
+/**
+ * Get the BIP-341 control block for spending via a specific taptree leaf.
+ *
+ * Format: ``(0xc0 | parity) || internal_x_only_key (32) || merkle_path_siblings``.
+ * Call with ``bytes_out = NULL`` or ``len = 0`` to query the required size via ``*written``.
+ *
+ * :param descriptor: Parsed tr() output descriptor.
+ * :param leaf_index: Zero-based leaf index (depth-first, left-to-right order).
+ * :param variant: See `wally_descriptor_get_num_variants`.
+ * :param multi_index: See `wally_descriptor_get_num_paths`.
+ * :param child_num: BIP32 child number, or 0 for static descriptors.
+ * :param flags: For future use. Must be 0.
+ * :param bytes_out: Destination for the control block bytes, or NULL to query size.
+ * :param len: Length of ``bytes_out`` in bytes.
+ * :param written: Destination for the number of bytes written (or required size).
+ */
+WALLY_CORE_API int wally_descriptor_get_taproot_control_block(
+    const struct wally_descriptor *descriptor,
+    uint32_t leaf_index,
+    uint32_t variant,
+    uint32_t multi_index,
+    uint32_t child_num,
+    uint32_t flags,
+    unsigned char *bytes_out,
+    size_t len,
+    size_t *written);
+
+/**
+ * Get the number of keys in a specific taptree leaf's miniscript.
+ *
+ * :param descriptor: Parsed tr() output descriptor.
+ * :param leaf_index: Zero-based leaf index (depth-first, left-to-right order).
+ * :param value_out: Destination for the key count.
+ */
+WALLY_CORE_API int wally_descriptor_get_taproot_leaf_num_keys(
+    const struct wally_descriptor *descriptor,
+    uint32_t leaf_index,
+    uint32_t *value_out);
+
+/**
+ * Get the descriptor-level key index for a key within a specific taptree leaf.
+ *
+ * :param descriptor: Parsed tr() output descriptor.
+ * :param leaf_index: Zero-based leaf index (depth-first, left-to-right order).
+ * :param key_position: Zero-based position of the key within the leaf's miniscript.
+ * :param value_out: Destination for the descriptor-level key index
+ *|    (suitable for use with `wally_descriptor_get_key`).
+ */
+WALLY_CORE_API int wally_descriptor_get_taproot_leaf_key_index(
+    const struct wally_descriptor *descriptor,
+    uint32_t leaf_index,
+    uint32_t key_position,
+    uint32_t *value_out);
 
 /**
  * Get the x-only internal key of a tr() descriptor.
