@@ -576,6 +576,20 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
                     goto cleanup;
                 }
                 break;
+            } else if (tok->kind == TK_CHECK_SEQUENCE_VERIFY || tok->kind == TK_CHECK_LOCK_TIME_VERIFY) {
+                uint32_t kind = (tok->kind == TK_CHECK_SEQUENCE_VERIFY)
+                                ? KIND_MINISCRIPT_OLDER : KIND_MINISCRIPT_AFTER;
+                const token_t *t2;
+                ms_node *n;
+                tk_cursor_next(&cursor); /* consume CSV/CLTV token */
+                t2 = tk_cursor_next(&cursor);
+                if (!t2 || t2->kind != TK_NUM) { ret = WALLY_EINVAL; goto cleanup; }
+                n = node_alloc(kind);
+                if (!n) { ret = WALLY_ENOMEM; goto cleanup; }
+                n->number = (int64_t)t2->data.num;
+                ret = terminal_stack_push(term, n);
+                if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
+                break;
             } else if (tok->kind == TK_VERIFY) {
                 /* pk_h, v:hash_fragment, v:thresh, or general v:X.
                  * Tokens right-to-left: VERIFY [EQUAL <digest> <hashop> VERIFY EQUAL NUM(32) SIZE]
