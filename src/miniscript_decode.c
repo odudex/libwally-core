@@ -285,3 +285,455 @@ int tokenize_script(const unsigned char *script, size_t script_len,
     *out_count = n;
     return WALLY_OK;
 }
+
+/* ─── nonterm_stack_t ─────────────────────────────────────────────────────── */
+
+struct nonterm_stack_t {
+    nonterm_t *items;
+    size_t     len;
+    size_t     cap;
+};
+
+nonterm_stack_t *nonterm_stack_new(size_t capacity)
+{
+    nonterm_stack_t *s = wally_malloc(sizeof(*s));
+    if (!s) return NULL;
+    s->items = wally_malloc(capacity * sizeof(nonterm_t));
+    if (!s->items) { wally_free(s); return NULL; }
+    s->len = 0;
+    s->cap = capacity;
+    return s;
+}
+
+void nonterm_stack_free(nonterm_stack_t *s)
+{
+    if (s) { wally_free(s->items); wally_free(s); }
+}
+
+int nonterm_stack_push(nonterm_stack_t *s, nonterm_t nt)
+{
+    if (s->len == s->cap) {
+        size_t new_cap = s->cap ? s->cap * 2 : 1;
+        nonterm_t *new_items = wally_malloc(new_cap * sizeof(nonterm_t));
+        if (!new_items) return WALLY_ENOMEM;
+        memcpy(new_items, s->items, s->len * sizeof(nonterm_t));
+        wally_free(s->items);
+        s->items = new_items;
+        s->cap = new_cap;
+    }
+    s->items[s->len++] = nt;
+    return WALLY_OK;
+}
+
+bool nonterm_stack_pop(nonterm_stack_t *s, nonterm_t *out)
+{
+    if (s->len == 0) return false;
+    *out = s->items[--s->len];
+    return true;
+}
+
+size_t nonterm_stack_size(const nonterm_stack_t *s)
+{
+    return s->len;
+}
+
+/* ─── tk_cursor_t ────────────────────────────────────────────────────────── */
+
+typedef struct {
+    const token_t *tokens;
+    size_t         pos;
+} tk_cursor_t;
+
+static void tk_cursor_init(tk_cursor_t *c, const token_t *t, size_t n)
+{
+    c->tokens = t;
+    c->pos    = n;
+}
+
+static const token_t *tk_cursor_next(tk_cursor_t *c)
+{
+    if (c->pos == 0) return NULL;
+    return &c->tokens[--c->pos];
+}
+
+static const token_t *tk_cursor_peek(const tk_cursor_t *c)
+{
+    if (c->pos == 0) return NULL;
+    return &c->tokens[c->pos - 1];
+}
+
+static void tk_cursor_un_next(tk_cursor_t *c)
+{
+    c->pos++;
+}
+
+/* ─── ms_node helpers ────────────────────────────────────────────────────── */
+
+void ms_node_free(ms_node *node)
+{
+    if (!node) return;
+    ms_node *child = node->child;
+    while (child) {
+        ms_node *next = child->next;
+        ms_node_free(child);
+        child = next;
+    }
+    wally_free((void *)node->data);
+    wally_free(node);
+}
+
+static ms_node *node_alloc(uint32_t kind)
+{
+    ms_node *n = wally_calloc(sizeof(*n));
+    if (n) n->kind = kind;
+    return n;
+}
+
+/* ─── reduce helpers ─────────────────────────────────────────────────────── */
+
+static int reduce1(terminal_stack_t *term, uint32_t kind)
+{
+    ms_node *child = terminal_stack_pop(term);
+    if (!child) return WALLY_EINVAL;
+    ms_node *parent = node_alloc(kind);
+    if (!parent) { ms_node_free(child); return WALLY_ENOMEM; }
+    parent->child  = child;
+    child->parent  = parent;
+    int ret = terminal_stack_push(term, parent);
+    if (ret != WALLY_OK) ms_node_free(parent);
+    return ret;
+}
+
+static int reduce2(terminal_stack_t *term, uint32_t kind)
+{
+    ms_node *left  = terminal_stack_pop(term);
+    ms_node *right = terminal_stack_pop(term);
+    if (!left || !right) {
+        ms_node_free(left);
+        ms_node_free(right);
+        return WALLY_EINVAL;
+    }
+    ms_node *parent = node_alloc(kind);
+    if (!parent) { ms_node_free(left); ms_node_free(right); return WALLY_ENOMEM; }
+    parent->child  = left;
+    left->next     = right;
+    left->parent   = parent;
+    right->parent  = parent;
+    int ret = terminal_stack_push(term, parent);
+    if (ret != WALLY_OK) ms_node_free(parent);
+    return ret;
+}
+
+static bool is_and_v(const tk_cursor_t *cursor)
+{
+    const token_t *tok = tk_cursor_peek(cursor);
+    if (!tok) return false;
+    switch (tok->kind) {
+    case TK_IF:
+    case TK_NOT_IF:
+    case TK_ELSE:
+    case TK_TO_ALT_STACK:
+    case TK_SWAP:
+        return false;
+    default:
+        return true;
+    }
+}
+
+/* ─── decode_script_to_node ──────────────────────────────────────────────── */
+
+int decode_script_to_node(const unsigned char *script, size_t script_len,
+                          uint32_t ctx_flags, ms_node **output)
+{
+    int ret = WALLY_OK;
+    nonterm_stack_t *nonterm = NULL;
+    terminal_stack_t *term   = NULL;
+    token_t *tokens          = NULL;
+    nonterm_t nt;
+
+    (void)ctx_flags;
+
+    size_t max_tokens = script_len * 2 + 1;
+    tokens = wally_malloc(max_tokens * sizeof(token_t));
+    if (!tokens) return WALLY_ENOMEM;
+    size_t n_tokens = 0;
+    ret = tokenize_script(script, script_len, tokens, max_tokens, &n_tokens);
+    if (ret != WALLY_OK) { wally_free(tokens); return ret; }
+
+    tk_cursor_t cursor;
+    tk_cursor_init(&cursor, tokens, n_tokens);
+
+    nonterm = nonterm_stack_new(n_tokens + 4);
+    term    = terminal_stack_new(n_tokens + 4);
+    if (!nonterm || !term) { ret = WALLY_ENOMEM; goto cleanup; }
+
+    nt.kind = NT_MAYBE_AND_V; nt.k = nt.n = 0;
+    if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+    nt.kind = NT_EXPRESSION;
+    if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+
+    nonterm_t cur;
+    while (nonterm_stack_pop(nonterm, &cur)) {
+        switch (cur.kind) {
+
+        case NT_EXPRESSION:
+            /* TODO: phases 12–26 fill in token dispatch here */
+            ret = WALLY_EINVAL;
+            goto cleanup;
+
+        case NT_MAYBE_AND_V:
+            if (is_and_v(&cursor)) {
+                nt.kind = NT_AND_V; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_EXPRESSION;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            }
+            break;
+
+        case NT_SWAP: {
+            const token_t *tok = tk_cursor_next(&cursor);
+            if (!tok || tok->kind != TK_SWAP) { ret = WALLY_EINVAL; goto cleanup; }
+            ret = reduce1(term, KIND_MINISCRIPT_SWAP);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+        }
+
+        case NT_ALT: {
+            const token_t *tok = tk_cursor_next(&cursor);
+            if (!tok || tok->kind != TK_TO_ALT_STACK) { ret = WALLY_EINVAL; goto cleanup; }
+            ret = reduce1(term, KIND_MINISCRIPT_ALT);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+        }
+
+        case NT_CHECK:
+            ret = reduce1(term, KIND_MINISCRIPT_CHECK);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+
+        case NT_DUP_IF:
+            ret = reduce1(term, KIND_MINISCRIPT_DUP_IF);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+
+        case NT_VERIFY:
+            ret = reduce1(term, KIND_MINISCRIPT_VERIFY);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+
+        case NT_NON_ZERO:
+            ret = reduce1(term, KIND_MINISCRIPT_NON_ZERO);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+
+        case NT_ZERO_NOT_EQUAL:
+            ret = reduce1(term, KIND_MINISCRIPT_ZERO_NOT_EQUAL);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+
+        case NT_AND_V:
+            if (is_and_v(&cursor)) {
+                nt.kind = NT_AND_V; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_MAYBE_AND_V;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            } else {
+                ret = reduce2(term, KIND_MINISCRIPT_AND_V);
+                if (ret != WALLY_OK) goto cleanup;
+            }
+            break;
+
+        case NT_AND_B:
+            ret = reduce2(term, KIND_MINISCRIPT_AND_B);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+
+        case NT_OR_B:
+            ret = reduce2(term, KIND_MINISCRIPT_OR_B);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+
+        case NT_OR_C:
+            ret = reduce2(term, KIND_MINISCRIPT_OR_C);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+
+        case NT_OR_D:
+            ret = reduce2(term, KIND_MINISCRIPT_OR_D);
+            if (ret != WALLY_OK) goto cleanup;
+            break;
+
+        case NT_TERN: {
+            ms_node *a = terminal_stack_pop(term);
+            ms_node *b = terminal_stack_pop(term);
+            ms_node *c = terminal_stack_pop(term);
+            if (!a || !b || !c) {
+                ms_node_free(a); ms_node_free(b); ms_node_free(c);
+                ret = WALLY_EINVAL; goto cleanup;
+            }
+            ms_node *parent = node_alloc(KIND_MINISCRIPT_ANDOR);
+            if (!parent) {
+                ms_node_free(a); ms_node_free(b); ms_node_free(c);
+                ret = WALLY_ENOMEM; goto cleanup;
+            }
+            parent->child = a;
+            a->next       = c;
+            c->next       = b;
+            a->parent = c->parent = b->parent = parent;
+            if ((ret = terminal_stack_push(term, parent)) != WALLY_OK) {
+                ms_node_free(parent);
+                goto cleanup;
+            }
+            break;
+        }
+
+        case NT_THRESH_W: {
+            const token_t *tok = tk_cursor_next(&cursor);
+            if (!tok) { ret = WALLY_EINVAL; goto cleanup; }
+            if (tok->kind == TK_ADD) {
+                nt.kind = NT_THRESH_W;
+                nt.k    = cur.k;
+                nt.n    = cur.n + 1;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_W_EXPRESSION; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            } else {
+                tk_cursor_un_next(&cursor);
+                nt.kind = NT_THRESH_E;
+                nt.k    = cur.k;
+                nt.n    = cur.n + 1;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_EXPRESSION; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            }
+            break;
+        }
+
+        case NT_THRESH_E: {
+            ms_node *parent = node_alloc(KIND_MINISCRIPT_THRESH);
+            if (!parent) { ret = WALLY_ENOMEM; goto cleanup; }
+            parent->number = (int64_t)cur.k;
+            ms_node *prev  = NULL;
+            for (uint32_t i = 0; i < cur.n; i++) {
+                ms_node *child = terminal_stack_pop(term);
+                if (!child) { ms_node_free(parent); ret = WALLY_EINVAL; goto cleanup; }
+                child->parent = parent;
+                child->next   = prev;
+                prev          = child;
+            }
+            parent->child = prev;
+            if ((ret = terminal_stack_push(term, parent)) != WALLY_OK) {
+                ms_node_free(parent);
+                goto cleanup;
+            }
+            break;
+        }
+
+        case NT_END_IF: {
+            const token_t *tok = tk_cursor_next(&cursor);
+            if (!tok) { ret = WALLY_EINVAL; goto cleanup; }
+            if (tok->kind == TK_ELSE) {
+                nt.kind = NT_END_IF_ELSE; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_MAYBE_AND_V;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_EXPRESSION;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            } else if (tok->kind == TK_IF) {
+                const token_t *tok2 = tk_cursor_next(&cursor);
+                if (!tok2) { ret = WALLY_EINVAL; goto cleanup; }
+                if (tok2->kind == TK_DUP) {
+                    nt.kind = NT_DUP_IF; nt.k = nt.n = 0;
+                    if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                } else if (tok2->kind == TK_ZERO_NOT_EQUAL) {
+                    const token_t *tok3 = tk_cursor_next(&cursor);
+                    if (!tok3 || tok3->kind != TK_SIZE) { ret = WALLY_EINVAL; goto cleanup; }
+                    nt.kind = NT_NON_ZERO; nt.k = nt.n = 0;
+                    if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                } else {
+                    ret = WALLY_EINVAL;
+                    goto cleanup;
+                }
+            } else if (tok->kind == TK_NOT_IF) {
+                nt.kind = NT_END_IF_NOT_IF; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            } else {
+                ret = WALLY_EINVAL;
+                goto cleanup;
+            }
+            break;
+        }
+
+        case NT_END_IF_NOT_IF: {
+            const token_t *tok = tk_cursor_next(&cursor);
+            if (!tok) { ret = WALLY_EINVAL; goto cleanup; }
+            if (tok->kind == TK_IF_DUP) {
+                nt.kind = NT_OR_D; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            } else {
+                tk_cursor_un_next(&cursor);
+                nt.kind = NT_OR_C; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            }
+            nt.kind = NT_EXPRESSION; nt.k = nt.n = 0;
+            if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            break;
+        }
+
+        case NT_END_IF_ELSE: {
+            const token_t *tok = tk_cursor_next(&cursor);
+            if (!tok) { ret = WALLY_EINVAL; goto cleanup; }
+            if (tok->kind == TK_IF) {
+                ret = reduce2(term, KIND_MINISCRIPT_OR_I);
+                if (ret != WALLY_OK) goto cleanup;
+            } else if (tok->kind == TK_NOT_IF) {
+                nt.kind = NT_TERN; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_EXPRESSION;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            } else {
+                ret = WALLY_EINVAL;
+                goto cleanup;
+            }
+            break;
+        }
+
+        case NT_W_EXPRESSION: {
+            const token_t *tok = tk_cursor_next(&cursor);
+            if (!tok) { ret = WALLY_EINVAL; goto cleanup; }
+            if (tok->kind == TK_FROM_ALT_STACK) {
+                nt.kind = NT_ALT; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            } else {
+                tk_cursor_un_next(&cursor);
+                nt.kind = NT_SWAP; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            }
+            nt.kind = NT_MAYBE_AND_V; nt.k = nt.n = 0;
+            if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            nt.kind = NT_EXPRESSION;
+            if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+            break;
+        }
+
+        } /* end switch */
+    } /* end while */
+
+    if (terminal_stack_size(term) != 1) {
+        ret = WALLY_EINVAL;
+        goto cleanup;
+    }
+    *output = terminal_stack_pop(term);
+    ret = WALLY_OK;
+
+cleanup:
+    if (ret != WALLY_OK) {
+        ms_node *node;
+        while ((node = terminal_stack_pop(term)) != NULL)
+            ms_node_free(node);
+    }
+    wally_free(tokens);
+    nonterm_stack_free(nonterm);
+    terminal_stack_free(term);
+    return ret;
+}

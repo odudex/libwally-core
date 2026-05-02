@@ -5,6 +5,7 @@
 #include "descriptor_int.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -103,6 +104,24 @@ void terminal_stack_free(terminal_stack_t *s);
 int terminal_stack_push(terminal_stack_t *s, ms_node *node);
 ms_node *terminal_stack_pop(terminal_stack_t *s);
 size_t terminal_stack_size(const terminal_stack_t *s);
+
+typedef struct nonterm_stack_t nonterm_stack_t;
+
+nonterm_stack_t *nonterm_stack_new(size_t capacity);
+void             nonterm_stack_free(nonterm_stack_t *s);
+int              nonterm_stack_push(nonterm_stack_t *s, nonterm_t nt);
+bool             nonterm_stack_pop(nonterm_stack_t *s, nonterm_t *out);
+size_t           nonterm_stack_size(const nonterm_stack_t *s);
+
+/* Decode a raw Bitcoin Script into an ms_node AST.
+ * ctx_flags: WALLY_MINISCRIPT_TAPSCRIPT or 0 (segwit v0).
+ * On success *output owns the tree; caller must free with ms_node_free().
+ */
+int decode_script_to_node(const unsigned char *script, size_t script_len,
+                          uint32_t ctx_flags, ms_node **output);
+
+/* Free a decoder-allocated ms_node tree (children + data). */
+void ms_node_free(ms_node *node);
 
 #ifdef __cplusplus
 }
