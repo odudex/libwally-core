@@ -413,6 +413,52 @@ WALLY_CORE_API int wally_descriptor_get_taproot_num_leaves(
     uint32_t *value_out);
 
 /**
+ * Get the script for a specific taptree leaf.
+ *
+ * :param descriptor: Parsed tr() output descriptor.
+ * :param leaf_index: Zero-based leaf index (depth-first, left-to-right order).
+ * :param variant: See `wally_descriptor_get_num_variants`.
+ * :param multi_index: See `wally_descriptor_get_num_paths`.
+ * :param child_num: BIP32 child number, or 0 for static descriptors.
+ * :param flags: For future use. Must be 0.
+ * :param bytes_out: Destination for the compiled tapscript.
+ * :param len: Length of ``bytes_out`` in bytes.
+ * :param written: Destination for the number of bytes written.
+ */
+WALLY_CORE_API int wally_descriptor_get_taproot_leaf_script(
+    const struct wally_descriptor *descriptor,
+    uint32_t leaf_index,
+    uint32_t variant,
+    uint32_t multi_index,
+    uint32_t child_num,
+    uint32_t flags,
+    unsigned char *bytes_out,
+    size_t len,
+    size_t *written);
+
+/**
+ * Get the tapleaf hash for a specific taptree leaf.
+ *
+ * :param descriptor: Parsed tr() output descriptor.
+ * :param leaf_index: Zero-based leaf index (depth-first, left-to-right order).
+ * :param variant: See `wally_descriptor_get_num_variants`.
+ * :param multi_index: See `wally_descriptor_get_num_paths`.
+ * :param child_num: BIP32 child number, or 0 for static descriptors.
+ * :param flags: For future use. Must be 0.
+ * :param bytes_out: Destination for the 32-byte tapleaf hash.
+ * :param len: Length of ``bytes_out``. Must be at least 32.
+ */
+WALLY_CORE_API int wally_descriptor_get_taproot_leaf_hash(
+    const struct wally_descriptor *descriptor,
+    uint32_t leaf_index,
+    uint32_t variant,
+    uint32_t multi_index,
+    uint32_t child_num,
+    uint32_t flags,
+    unsigned char *bytes_out,
+    size_t len);
+
+/**
  * Get the x-only internal key of a tr() descriptor.
  *
  * :param descriptor: Parsed tr() output descriptor.

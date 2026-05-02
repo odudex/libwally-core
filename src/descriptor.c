@@ -4183,6 +4183,113 @@ int wally_descriptor_get_taproot_num_leaves(
     return WALLY_OK;
 }
 
+int wally_descriptor_get_taproot_leaf_script(
+    const struct wally_descriptor *descriptor,
+    uint32_t leaf_index,
+    uint32_t variant, uint32_t multi_index,
+    uint32_t child_num, uint32_t flags,
+    unsigned char *bytes_out, size_t len, size_t *written)
+{
+    ms_ctx ctx;
+    ms_node *taptree, *leaf;
+    int ret;
+
+    if (written)
+        *written = 0;
+    if (!descriptor || !written || (bytes_out && !len) || flags)
+        return WALLY_EINVAL;
+    if (descriptor->top_node->kind != KIND_DESCRIPTOR_TR ||
+        variant >= descriptor->num_variants ||
+        child_num >= BIP32_INITIAL_HARDENED_CHILD ||
+        multi_index >= descriptor->num_multipaths)
+        return WALLY_EINVAL;
+    if (!descriptor->top_node->child)
+        return WALLY_ERROR; /* tr() with no internal key — corrupt AST */
+    taptree = descriptor->top_node->child->next;
+    if (!taptree)
+        return WALLY_EINVAL; /* key-only tr() */
+    if (leaf_index >= count_taptree_leaves(taptree))
+        return WALLY_EINVAL;
+
+    leaf = find_taptree_leaf(taptree, leaf_index);
+    if (!leaf)
+        return WALLY_EINVAL;
+
+    memcpy(&ctx, descriptor, sizeof(ctx));
+    ctx.variant = variant;
+    ctx.child_num = child_num;
+    ctx.multi_index = multi_index;
+    ctx.path_buff = NULL;
+    if (ctx.max_path_elems &&
+        !(ctx.path_buff = wally_malloc(ctx.max_path_elems * sizeof(uint32_t))))
+        return WALLY_ENOMEM;
+
+    /* leaf->parent->kind == KIND_TAPTREE_BRANCH => node_is_root() is true */
+    ret = generate_script(&ctx, leaf, bytes_out, len, written);
+    wally_free(ctx.path_buff);
+    return ret;
+}
+
+int wally_descriptor_get_taproot_leaf_hash(
+    const struct wally_descriptor *descriptor,
+    uint32_t leaf_index,
+    uint32_t variant, uint32_t multi_index,
+    uint32_t child_num, uint32_t flags,
+    unsigned char *bytes_out, size_t len)
+{
+    ms_ctx ctx;
+    ms_node *taptree, *leaf;
+    unsigned char *script_buf;
+    size_t script_buf_len = 0, written = 0;
+    int ret;
+
+    if (!descriptor || !bytes_out || len < SHA256_LEN || flags)
+        return WALLY_EINVAL;
+    if (descriptor->top_node->kind != KIND_DESCRIPTOR_TR ||
+        variant >= descriptor->num_variants ||
+        child_num >= BIP32_INITIAL_HARDENED_CHILD ||
+        multi_index >= descriptor->num_multipaths)
+        return WALLY_EINVAL;
+    if (!descriptor->top_node->child)
+        return WALLY_ERROR; /* tr() with no internal key — corrupt AST */
+    taptree = descriptor->top_node->child->next;
+    if (!taptree)
+        return WALLY_EINVAL;
+    if (leaf_index >= count_taptree_leaves(taptree))
+        return WALLY_EINVAL;
+
+    leaf = find_taptree_leaf(taptree, leaf_index);
+    if (!leaf)
+        return WALLY_EINVAL;
+
+    memcpy(&ctx, descriptor, sizeof(ctx));
+    ctx.variant = variant;
+    ctx.child_num = child_num;
+    ctx.multi_index = multi_index;
+    ctx.path_buff = NULL;
+    script_buf = NULL;
+    if (ctx.max_path_elems &&
+        !(ctx.path_buff = wally_malloc(ctx.max_path_elems * sizeof(uint32_t))))
+        return WALLY_ENOMEM;
+
+    ret = node_generation_size(leaf, &script_buf_len);
+    if (ret != WALLY_OK)
+        goto cleanup;
+    if (!(script_buf = wally_malloc(script_buf_len))) {
+        ret = WALLY_ENOMEM;
+        goto cleanup;
+    }
+
+    ret = generate_script(&ctx, leaf, script_buf, script_buf_len, &written);
+    if (ret == WALLY_OK)
+        ret = tapleaf_hash(WALLY_LEAF_VERSION_TAPSCRIPT, script_buf, written, bytes_out);
+
+cleanup:
+    wally_free(ctx.path_buff);
+    wally_free(script_buf);
+    return ret;
+}
+
 int wally_descriptor_get_taproot_internal_key(
     const struct wally_descriptor *descriptor,
     uint32_t variant, uint32_t multi_index, uint32_t child_num, uint32_t flags,
