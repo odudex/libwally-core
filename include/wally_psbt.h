@@ -9,6 +9,9 @@
 extern "C" {
 #endif
 
+/* Forward declaration for use in taproot descriptor functions */
+struct wally_descriptor;
+
 /* PSBT Version number */
 #define WALLY_PSBT_VERSION_0 0x0
 #define WALLY_PSBT_VERSION_2 0x2
@@ -370,6 +373,68 @@ WALLY_CORE_API int wally_psbt_input_set_taproot_internal_key(
     struct wally_psbt_input *input,
     const unsigned char *pub_key,
     size_t pub_key_len);
+
+/**
+ * Add a taproot leaf script (TAP_LEAF_SCRIPT) to a PSBT input.
+ *
+ * :param input: The input to update.
+ * :param control_block: The BIP-341 control block for the leaf.
+ * :param control_block_len: Length of ``control_block`` in bytes.
+ * :param script: The leaf script bytes.
+ * :param script_len: Length of ``script`` in bytes. Must be non-zero.
+ */
+WALLY_CORE_API int wally_psbt_input_add_taproot_leaf_script(
+    struct wally_psbt_input *input,
+    const unsigned char *control_block,
+    size_t control_block_len,
+    const unsigned char *script,
+    size_t script_len);
+
+/**
+ * Get the number of taproot leaf scripts in a PSBT input.
+ *
+ * :param input: The input to query.
+ * :param written: Destination for the count.
+ */
+WALLY_CORE_API int wally_psbt_input_get_taproot_leaf_script_count(
+    const struct wally_psbt_input *input,
+    size_t *written);
+
+/**
+ * Add a taproot script-path signature (TAP_SCRIPT_SIG) to a PSBT input.
+ *
+ * :param input: The input to update.
+ * :param pubkey_and_hash: Concatenation of x-only pubkey (32 bytes) and leaf hash (32 bytes).
+ * :param pubkey_and_hash_len: Must be 64.
+ * :param sig: The 64 or 65-byte Schnorr signature.
+ * :param sig_len: Length of ``sig``.
+ */
+WALLY_CORE_API int wally_psbt_input_add_taproot_leaf_signature(
+    struct wally_psbt_input *input,
+    const unsigned char *pubkey_and_hash,
+    size_t pubkey_and_hash_len,
+    const unsigned char *sig,
+    size_t sig_len);
+
+/**
+ * Get the number of taproot script-path signatures in a PSBT input.
+ *
+ * :param input: The input to query.
+ * :param written: Destination for the count.
+ */
+WALLY_CORE_API int wally_psbt_input_get_taproot_leaf_signature_count(
+    const struct wally_psbt_input *input,
+    size_t *written);
+
+/**
+ * Get the number of TAP_BIP32_DERIVATION entries in a PSBT input.
+ *
+ * :param input: The input to query.
+ * :param written: Destination for the count.
+ */
+WALLY_CORE_API int wally_psbt_input_get_taproot_keypaths_size(
+    const struct wally_psbt_input *input,
+    size_t *written);
 
 /**
  * Find a partial signature matching a pubkey in an input.

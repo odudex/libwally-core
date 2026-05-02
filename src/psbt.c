@@ -4,6 +4,7 @@
 #include <include/wally_script.h>
 #include <include/wally_psbt.h>
 #include <include/wally_psbt_members.h>
+#include <include/wally_descriptor.h>
 
 #include <limits.h>
 #include "psbt_io.h"
@@ -1776,6 +1777,62 @@ int wally_psbt_add_input_taproot_keypath(
                                                 tapleaf_hashes, tapleaf_hashes_len,
                                                 fingerprint, fingerprint_len,
                                                 child_path, child_path_len);
+}
+
+int wally_psbt_input_add_taproot_leaf_script(
+    struct wally_psbt_input *input,
+    const unsigned char *control_block, size_t control_block_len,
+    const unsigned char *script, size_t script_len)
+{
+    if (!input || !script || !script_len)
+        return WALLY_EINVAL;
+    if (wally_bip341_control_block_verify(control_block, control_block_len) != WALLY_OK)
+        return WALLY_EINVAL;
+    return map_add(&input->taproot_leaf_scripts,
+                   control_block, control_block_len,
+                   script, script_len, false, false);
+}
+
+int wally_psbt_input_get_taproot_leaf_script_count(
+    const struct wally_psbt_input *input, size_t *written)
+{
+    if (!input || !written)
+        return WALLY_EINVAL;
+    *written = input->taproot_leaf_scripts.num_items;
+    return WALLY_OK;
+}
+
+int wally_psbt_input_add_taproot_leaf_signature(
+    struct wally_psbt_input *input,
+    const unsigned char *pubkey_and_hash, size_t pubkey_and_hash_len,
+    const unsigned char *sig, size_t sig_len)
+{
+    if (!input || pubkey_and_hash_len != 64u || !sig ||
+        (sig_len != 64u && sig_len != 65u))
+        return WALLY_EINVAL;
+    if (wally_ec_xonly_public_key_verify(pubkey_and_hash, EC_XONLY_PUBLIC_KEY_LEN) != WALLY_OK)
+        return WALLY_EINVAL;
+    return map_add(&input->taproot_leaf_signatures,
+                   pubkey_and_hash, pubkey_and_hash_len,
+                   sig, sig_len, false, false);
+}
+
+int wally_psbt_input_get_taproot_leaf_signature_count(
+    const struct wally_psbt_input *input, size_t *written)
+{
+    if (!input || !written)
+        return WALLY_EINVAL;
+    *written = input->taproot_leaf_signatures.num_items;
+    return WALLY_OK;
+}
+
+int wally_psbt_input_get_taproot_keypaths_size(
+    const struct wally_psbt_input *input, size_t *written)
+{
+    if (!input || !written)
+        return WALLY_EINVAL;
+    *written = input->taproot_leaf_paths.num_items;
+    return WALLY_OK;
 }
 
 int wally_psbt_add_tx_input_at(struct wally_psbt *psbt,
