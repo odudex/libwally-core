@@ -424,6 +424,29 @@ static int reduce2(terminal_stack_t *term, uint32_t kind)
     return ret;
 }
 
+/* Consume the SIZE 32 EQUALVERIFY prefix (tokens right-to-left: VERIFY EQUAL NUM(32) SIZE). */
+static bool consume_hash_suffix(tk_cursor_t *c)
+{
+    const token_t *t;
+    t = tk_cursor_next(c); if (!t || t->kind != TK_VERIFY) return false;
+    t = tk_cursor_next(c); if (!t || t->kind != TK_EQUAL)  return false;
+    t = tk_cursor_next(c); if (!t || t->kind != TK_NUM || t->data.num != 32) return false;
+    t = tk_cursor_next(c); if (!t || t->kind != TK_SIZE)   return false;
+    return true;
+}
+
+static ms_node *make_hash_node(uint32_t kind, const unsigned char *hash, size_t hash_len)
+{
+    ms_node *n = node_alloc(kind);
+    if (!n) return NULL;
+    unsigned char *buf = wally_malloc(hash_len);
+    if (!buf) { ms_node_free(n); return NULL; }
+    memcpy(buf, hash, hash_len);
+    n->data = (const char *)buf;
+    n->data_len = (uint32_t)hash_len;
+    return n;
+}
+
 static bool is_and_v(const tk_cursor_t *cursor)
 {
     const token_t *tok = tk_cursor_peek(cursor);
@@ -481,7 +504,7 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
             if (!tok) { ret = WALLY_EINVAL; goto cleanup; }
 
             if (tok->kind == TK_BYTES33 || tok->kind == TK_BYTES65 || tok->kind == TK_BYTES32) {
-                /* pk_k: single key push (tokens right-to-left: BYTES33/BYTES65/BYTES32) */
+                /* pk_k: single key push */
                 const unsigned char *key_bytes;
                 size_t key_len;
                 unsigned char *buf;
@@ -504,32 +527,149 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
                 ret = terminal_stack_push(term, n);
                 if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
                 break;
+            } else if (tok->kind == TK_EQUAL) {
+                /* Hash fragments (sha256/hash256/ripemd160/hash160) or thresh.
+                 * Script: SIZE 32 EQUALVERIFY <hashop> <digest> EQUAL
+                 * Tokens right-to-left: EQUAL, <digest>, <hashop>, VERIFY, EQUAL, NUM(32), SIZE */
+                const token_t *t2, *t3;
+                ms_node *n;
+                tk_cursor_next(&cursor); /* consume TK_EQUAL */
+                t2 = tk_cursor_next(&cursor);
+                if (!t2) { ret = WALLY_EINVAL; goto cleanup; }
+
+                if (t2->kind == TK_BYTES32) {
+                    unsigned char hash32[32];
+                    memcpy(hash32, t2->data.bytes32, 32);
+                    t3 = tk_cursor_next(&cursor);
+                    if (!t3) { ret = WALLY_EINVAL; goto cleanup; }
+                    uint32_t kind;
+                    if (t3->kind == TK_SHA256)       kind = KIND_MINISCRIPT_SHA256;
+                    else if (t3->kind == TK_HASH256) kind = KIND_MINISCRIPT_HASH256;
+                    else { ret = WALLY_EINVAL; goto cleanup; }
+                    if (!consume_hash_suffix(&cursor)) { ret = WALLY_EINVAL; goto cleanup; }
+                    n = make_hash_node(kind, hash32, 32);
+                    if (!n) { ret = WALLY_ENOMEM; goto cleanup; }
+                    ret = terminal_stack_push(term, n);
+                    if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
+                } else if (t2->kind == TK_HASH20) {
+                    unsigned char hash20[20];
+                    memcpy(hash20, t2->data.hash20, 20);
+                    t3 = tk_cursor_next(&cursor);
+                    if (!t3) { ret = WALLY_EINVAL; goto cleanup; }
+                    uint32_t kind;
+                    if (t3->kind == TK_RIPEMD160)    kind = KIND_MINISCRIPT_RIPEMD160;
+                    else if (t3->kind == TK_HASH160) kind = KIND_MINISCRIPT_HASH160;
+                    else { ret = WALLY_EINVAL; goto cleanup; }
+                    if (!consume_hash_suffix(&cursor)) { ret = WALLY_EINVAL; goto cleanup; }
+                    n = make_hash_node(kind, hash20, 20);
+                    if (!n) { ret = WALLY_ENOMEM; goto cleanup; }
+                    ret = terminal_stack_push(term, n);
+                    if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
+                } else if (t2->kind == TK_NUM) {
+                    /* thresh continuation: EQUAL NUM(k) → ThreshW{k,0} */
+                    nt.kind = NT_THRESH_W;
+                    nt.k = t2->data.num;
+                    nt.n = 0;
+                    if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                } else {
+                    ret = WALLY_EINVAL;
+                    goto cleanup;
+                }
+                break;
             } else if (tok->kind == TK_VERIFY) {
-                /* pk_h: DUP HASH160 <hash20> EQUALVERIFY
-                 * tokens right-to-left: VERIFY, EQUAL, HASH20, HASH160, DUP */
-                unsigned char hash20[20];
-                const token_t *t2;
-                unsigned char *buf;
+                /* pk_h, v:hash_fragment, v:thresh, or general v:X.
+                 * Tokens right-to-left: VERIFY [EQUAL <digest> <hashop> VERIFY EQUAL NUM(32) SIZE]
+                 *                    or VERIFY EQUAL HASH20 HASH160 DUP  (pk_h)
+                 *                    or VERIFY <X tokens>                (v:X) */
+                const token_t *t2, *t3, *t4, *t5;
                 ms_node *n;
                 tk_cursor_next(&cursor); /* consume TK_VERIFY */
-                t2 = tk_cursor_next(&cursor);
-                if (!t2 || t2->kind != TK_EQUAL) { ret = WALLY_EINVAL; goto cleanup; }
-                t2 = tk_cursor_next(&cursor);
-                if (!t2 || t2->kind != TK_HASH20) { ret = WALLY_EINVAL; goto cleanup; }
-                memcpy(hash20, t2->data.hash20, 20);
-                t2 = tk_cursor_next(&cursor);
-                if (!t2 || t2->kind != TK_HASH160) { ret = WALLY_EINVAL; goto cleanup; }
-                t2 = tk_cursor_next(&cursor);
-                if (!t2 || t2->kind != TK_DUP) { ret = WALLY_EINVAL; goto cleanup; }
-                n = node_alloc(KIND_MINISCRIPT_PK_H);
-                if (!n) { ret = WALLY_ENOMEM; goto cleanup; }
-                buf = wally_malloc(20);
-                if (!buf) { ms_node_free(n); ret = WALLY_ENOMEM; goto cleanup; }
-                memcpy(buf, hash20, 20);
-                n->data = (const char *)buf;
-                n->data_len = 20;
-                ret = terminal_stack_push(term, n);
-                if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
+                t2 = tk_cursor_peek(&cursor);
+
+                if (t2 && t2->kind == TK_EQUAL) {
+                    tk_cursor_next(&cursor); /* consume TK_EQUAL */
+                    t3 = tk_cursor_next(&cursor);
+                    if (!t3) { ret = WALLY_EINVAL; goto cleanup; }
+
+                    if (t3->kind == TK_HASH20) {
+                        unsigned char hash20[20];
+                        memcpy(hash20, t3->data.hash20, 20);
+                        t4 = tk_cursor_next(&cursor);
+                        if (!t4) { ret = WALLY_EINVAL; goto cleanup; }
+
+                        if (t4->kind == TK_HASH160) {
+                            /* pk_h or v:hash160: disambiguate by next token */
+                            t5 = tk_cursor_peek(&cursor);
+                            if (!t5) { ret = WALLY_EINVAL; goto cleanup; }
+                            if (t5->kind == TK_DUP) {
+                                /* pk_h: DUP HASH160 <hash20> EQUALVERIFY */
+                                tk_cursor_next(&cursor); /* consume TK_DUP */
+                                n = make_hash_node(KIND_MINISCRIPT_PK_H, hash20, 20);
+                                if (!n) { ret = WALLY_ENOMEM; goto cleanup; }
+                                ret = terminal_stack_push(term, n);
+                                if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
+                            } else if (t5->kind == TK_VERIFY) {
+                                /* v:hash160: SIZE 32 EQUALVERIFY HASH160 <h> EQUALVERIFY */
+                                if (!consume_hash_suffix(&cursor)) { ret = WALLY_EINVAL; goto cleanup; }
+                                nt.kind = NT_VERIFY; nt.k = nt.n = 0;
+                                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                                n = make_hash_node(KIND_MINISCRIPT_HASH160, hash20, 20);
+                                if (!n) { ret = WALLY_ENOMEM; goto cleanup; }
+                                ret = terminal_stack_push(term, n);
+                                if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
+                            } else {
+                                ret = WALLY_EINVAL;
+                                goto cleanup;
+                            }
+                        } else if (t4->kind == TK_RIPEMD160) {
+                            /* v:ripemd160: SIZE 32 EQUALVERIFY RIPEMD160 <h> EQUALVERIFY */
+                            if (!consume_hash_suffix(&cursor)) { ret = WALLY_EINVAL; goto cleanup; }
+                            nt.kind = NT_VERIFY; nt.k = nt.n = 0;
+                            if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                            n = make_hash_node(KIND_MINISCRIPT_RIPEMD160, hash20, 20);
+                            if (!n) { ret = WALLY_ENOMEM; goto cleanup; }
+                            ret = terminal_stack_push(term, n);
+                            if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
+                        } else {
+                            ret = WALLY_EINVAL;
+                            goto cleanup;
+                        }
+                    } else if (t3->kind == TK_BYTES32) {
+                        unsigned char hash32[32];
+                        memcpy(hash32, t3->data.bytes32, 32);
+                        t4 = tk_cursor_next(&cursor);
+                        if (!t4) { ret = WALLY_EINVAL; goto cleanup; }
+                        uint32_t kind;
+                        if (t4->kind == TK_SHA256)       kind = KIND_MINISCRIPT_SHA256;
+                        else if (t4->kind == TK_HASH256) kind = KIND_MINISCRIPT_HASH256;
+                        else { ret = WALLY_EINVAL; goto cleanup; }
+                        /* v:sha256 or v:hash256 */
+                        if (!consume_hash_suffix(&cursor)) { ret = WALLY_EINVAL; goto cleanup; }
+                        nt.kind = NT_VERIFY; nt.k = nt.n = 0;
+                        if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                        n = make_hash_node(kind, hash32, 32);
+                        if (!n) { ret = WALLY_ENOMEM; goto cleanup; }
+                        ret = terminal_stack_push(term, n);
+                        if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
+                    } else if (t3->kind == TK_NUM) {
+                        /* v:thresh */
+                        nt.kind = NT_VERIFY; nt.k = nt.n = 0;
+                        if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                        nt.kind = NT_THRESH_W;
+                        nt.k = t3->data.num;
+                        nt.n = 0;
+                        if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                    } else {
+                        ret = WALLY_EINVAL;
+                        goto cleanup;
+                    }
+                } else {
+                    /* general v:X — TK_VERIFY already consumed, X starts at current position */
+                    nt.kind = NT_VERIFY; nt.k = nt.n = 0;
+                    if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                    nt.kind = NT_EXPRESSION;
+                    if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                }
                 break;
             }
             ret = WALLY_EINVAL;
