@@ -3,6 +3,7 @@
 #include <include/wally_core.h>
 #include <include/wally_script.h>
 #include <string.h>
+#include "script_int.h"
 
 int tokenize_script(const unsigned char *script, size_t script_len,
                     token_t *tokens, size_t max_tokens, size_t *out_count)
@@ -69,8 +70,20 @@ int tokenize_script(const unsigned char *script, size_t script_len,
             } else if (data_len == 65) {
                 tokens[n].kind = TK_BYTES65;
                 memcpy(tokens[n].data.bytes65, data, 65);
+            } else if (data_len >= 1 && data_len <= 4) {
+                /* Script number (CScriptNum): 1–4 byte little-endian with sign bit */
+                unsigned char sbuf[5];
+                int64_t n64;
+                sbuf[0] = (unsigned char)data_len;
+                memcpy(sbuf + 1, data, data_len);
+                if (scriptint_from_bytes(sbuf, data_len + 1, &n64) != WALLY_OK)
+                    return WALLY_EINVAL;
+                if (n64 < 0 || n64 > UINT32_MAX)
+                    return WALLY_EINVAL;
+                tokens[n].kind = TK_NUM;
+                tokens[n].data.num = (uint32_t)n64;
             } else {
-                return WALLY_EINVAL; /* script numbers deferred to phase 8 */
+                return WALLY_EINVAL;
             }
             n++;
             continue;

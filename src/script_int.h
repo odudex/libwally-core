@@ -87,6 +87,10 @@ size_t scriptint_get_length(int64_t signed_v);
 
 size_t scriptint_to_bytes(int64_t signed_v, unsigned char *bytes_out);
 
+/* Decode a CScriptNum from bytes[1..bytes[0]], where bytes[0] is the count.
+ * len must be at least bytes[0]+1. Accepts 1–4 byte values only. */
+int64_t scriptint_from_bytes(const unsigned char *bytes, size_t len, int64_t *value_out);
+
 /* Compute the BIP-341 tapleaf hash:
  *   tagged_hash("TapLeaf", leaf_version || compact_size(script_len) || script)
  * hash_out must have room for SHA256_LEN bytes. */
