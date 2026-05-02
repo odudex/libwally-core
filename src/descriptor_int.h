@@ -72,6 +72,18 @@ void ms_witness_free(ms_witness *w);
 int  ms_satisfaction_init(ms_satisfaction *s, uint32_t witness_kind);
 void ms_satisfaction_free(ms_satisfaction *s);
 ms_satisfaction satisfaction_best(ms_satisfaction a, ms_satisfaction b);
+void satisfaction_or_b(ms_satisfaction sat_l, ms_satisfaction dissat_l,
+                       ms_satisfaction sat_r, ms_satisfaction dissat_r,
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out);
+void satisfaction_or_c(ms_satisfaction sat_l, ms_satisfaction dissat_l,
+                       ms_satisfaction sat_r, ms_satisfaction dissat_r,
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out);
+void satisfaction_or_d(ms_satisfaction sat_l, ms_satisfaction dissat_l,
+                       ms_satisfaction sat_r, ms_satisfaction dissat_r,
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out);
+void satisfaction_or_i(ms_satisfaction sat_l, ms_satisfaction dissat_l,
+                       ms_satisfaction sat_r, ms_satisfaction dissat_r,
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out);
 
 /* A node in a parsed miniscript expression */
 typedef struct ms_node_t {
