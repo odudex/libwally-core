@@ -5,6 +5,8 @@
 #include <string.h>
 #include "script_int.h"
 
+#define MULTI_A_NUM_KEYS_MAX 999
+
 struct terminal_stack_t {
     ms_node **nodes;
     size_t len;
@@ -741,6 +743,99 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
                 k = t2->data.num;
 
                 parent = node_alloc(KIND_MINISCRIPT_MULTI);
+                if (!parent) {
+                    ms_node *p = prev;
+                    while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                    ret = WALLY_ENOMEM;
+                    goto cleanup;
+                }
+                parent->number = (int64_t)k;
+                { ms_node *p = prev; while (p) { p->parent = parent; p = p->next; } }
+                parent->child = prev;
+
+                ret = terminal_stack_push(term, parent);
+                if (ret != WALLY_OK) { ms_node_free(parent); goto cleanup; }
+                break;
+            } else if (tok->kind == TK_NUM_EQUAL) {
+                /* multi_a / sortedmulti_a:
+                 * script: K1 OP_CHECKSIG K2 OP_CHECKSIGADD ... Kn OP_CHECKSIGADD k OP_NUMEQUAL
+                 * reading right-to-left: NUMEQUAL k (CHECKSIGADD Kn)... (CHECKSIG K1) */
+                const token_t *t2;
+                uint32_t n = 0, k;
+                ms_node *prev = NULL, *parent;
+                bool done = false;
+
+                tk_cursor_next(&cursor); /* consume TK_NUM_EQUAL */
+
+                t2 = tk_cursor_next(&cursor);
+                if (!t2 || t2->kind != TK_NUM || t2->data.num < 1) {
+                    ret = WALLY_EINVAL;
+                    goto cleanup;
+                }
+                k = t2->data.num;
+
+                while (!done) {
+                    const token_t *opcode_tok, *key_tok;
+                    ms_node *key_node;
+                    unsigned char *buf;
+
+                    if (n >= MULTI_A_NUM_KEYS_MAX) {
+                        ms_node *p = prev;
+                        while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                        ret = WALLY_EINVAL;
+                        goto cleanup;
+                    }
+
+                    opcode_tok = tk_cursor_next(&cursor);
+                    if (!opcode_tok) {
+                        ms_node *p = prev;
+                        while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                        ret = WALLY_EINVAL;
+                        goto cleanup;
+                    }
+
+                    if (opcode_tok->kind == TK_CHECK_SIG) {
+                        done = true;
+                    } else if (opcode_tok->kind != TK_CHECK_SIG_ADD) {
+                        ms_node *p = prev;
+                        while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                        ret = WALLY_EINVAL;
+                        goto cleanup;
+                    }
+
+                    key_tok = tk_cursor_next(&cursor);
+                    if (!key_tok || key_tok->kind != TK_BYTES32) {
+                        ms_node *p = prev;
+                        while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                        ret = WALLY_EINVAL;
+                        goto cleanup;
+                    }
+
+                    key_node = node_alloc(KIND_MINISCRIPT_PK_K);
+                    buf = key_node ? wally_malloc(32) : NULL;
+                    if (!key_node || !buf) {
+                        ms_node_free(key_node);
+                        ms_node *p = prev;
+                        while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                        ret = WALLY_ENOMEM;
+                        goto cleanup;
+                    }
+                    memcpy(buf, key_tok->data.bytes32, 32);
+                    key_node->data = (const char *)buf;
+                    key_node->data_len = 32;
+                    key_node->next = prev; /* prepend — keys decode Kn..K1, prepend restores K1..Kn */
+                    prev = key_node;
+                    n++;
+                }
+
+                if (k > n) {
+                    ms_node *p = prev;
+                    while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                    ret = WALLY_EINVAL;
+                    goto cleanup;
+                }
+
+                parent = node_alloc(KIND_MINISCRIPT_MULTI_A);
                 if (!parent) {
                     ms_node *p = prev;
                     while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }

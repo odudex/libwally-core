@@ -564,6 +564,88 @@ static bool test_decode_multi(void)
     return ok;
 }
 
+static bool test_decode_multi_a(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+
+    /* multi_a(2, K1, K2, K3): K1 OP_CHECKSIG K2 OP_CHECKSIGADD K3 OP_CHECKSIGADD OP_2 OP_NUMEQUAL */
+    {
+        unsigned char K1[32], K2[32], K3[32];
+        unsigned char script[104];
+        size_t off = 0;
+        memset(K1, 0x01, 32);
+        memset(K2, 0x02, 32);
+        memset(K3, 0x03, 32);
+        script[off++] = 0x20; memcpy(script + off, K1, 32); off += 32;
+        script[off++] = OP_CHECKSIG;
+        script[off++] = 0x20; memcpy(script + off, K2, 32); off += 32;
+        script[off++] = OP_CHECKSIGADD;
+        script[off++] = 0x20; memcpy(script + off, K3, 32); off += 32;
+        script[off++] = OP_CHECKSIGADD;
+        script[off++] = OP_2;
+        script[off++] = OP_NUMEQUAL;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_MULTI_A);
+        CHECK(output->number == 2);
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->child->data_len == 32);
+        CHECK(memcmp(output->child->data, K1, 32) == 0);
+        CHECK(output->child->next != NULL);
+        CHECK(memcmp(output->child->next->data, K2, 32) == 0);
+        CHECK(output->child->next->next != NULL);
+        CHECK(memcmp(output->child->next->next->data, K3, 32) == 0);
+        CHECK(output->child->next->next->next == NULL);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* multi_a(1, K1): minimum valid (k=1, n=1) */
+    {
+        unsigned char K1[32];
+        unsigned char script[36];
+        size_t off = 0;
+        memset(K1, 0xaa, 32);
+        script[off++] = 0x20; memcpy(script + off, K1, 32); off += 32;
+        script[off++] = OP_CHECKSIG;
+        script[off++] = OP_1;
+        script[off++] = OP_NUMEQUAL;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_MULTI_A);
+        CHECK(output->number == 1);
+        CHECK(output->child != NULL);
+        CHECK(output->child->data_len == 32);
+        CHECK(memcmp(output->child->data, K1, 32) == 0);
+        CHECK(output->child->next == NULL);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* Error: k > n (k=3, n=2) */
+    {
+        unsigned char K1[32], K2[32];
+        unsigned char script[70];
+        size_t off = 0;
+        memset(K1, 0x02, 32);
+        memset(K2, 0x03, 32);
+        script[off++] = 0x20; memcpy(script + off, K1, 32); off += 32;
+        script[off++] = OP_CHECKSIG;
+        script[off++] = 0x20; memcpy(script + off, K2, 32); off += 32;
+        script[off++] = OP_CHECKSIGADD;
+        script[off++] = OP_3;
+        script[off++] = OP_NUMEQUAL;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    return ok;
+}
+
 int main(void)
 {
     bool ok = true;
@@ -577,6 +659,10 @@ int main(void)
     }
     if (!test_decode_multi()) {
         printf("[test_decode_multi] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_multi_a()) {
+        printf("[test_decode_multi_a] failed!\n");
         ok = false;
     }
     wally_cleanup(0);
