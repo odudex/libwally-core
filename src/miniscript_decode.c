@@ -849,6 +849,15 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
                 ret = terminal_stack_push(term, parent);
                 if (ret != WALLY_OK) { ms_node_free(parent); goto cleanup; }
                 break;
+            } else if (tok->kind == TK_BOOL_AND) {
+                tk_cursor_next(&cursor); /* consume TK_BOOL_AND */
+                nt.kind = NT_AND_B; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_EXPRESSION; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_W_EXPRESSION; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                break;
             }
             ret = WALLY_EINVAL;
             goto cleanup;

@@ -646,6 +646,137 @@ static bool test_decode_multi_a(void)
     return ok;
 }
 
+static bool test_decode_and_v(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+
+    /* and_v(v:older(100), pk_h(B)):
+     * script: <100> OP_CSV OP_VERIFY OP_DUP OP_HASH160 <hash20> OP_EQUALVERIFY
+     * Tree: AND_V( VERIFY(OLDER(100)), PK_H ) */
+    {
+        unsigned char hash[20];
+        /* <100> = push 1 byte [0x64] */
+        unsigned char script[] = {
+            0x01, 0x64,                     /* push 1 byte: 100 */
+            OP_CHECKSEQUENCEVERIFY,
+            OP_VERIFY,
+            OP_DUP, OP_HASH160,
+            0x14,                           /* push 20 bytes */
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  /* hash20 */
+            OP_EQUALVERIFY
+        };
+        memset(hash, 0xbb, 20);
+        memcpy(script + 7, hash, 20);
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_AND_V);
+        /* left child = v:older(100) = VERIFY wrapping OLDER */
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_VERIFY);
+        CHECK(output->child->child != NULL);
+        CHECK(output->child->child->kind == KIND_MINISCRIPT_OLDER);
+        CHECK(output->child->child->number == 100);
+        /* right child = pk_h */
+        CHECK(output->child->next != NULL);
+        CHECK(output->child->next->kind == KIND_MINISCRIPT_PK_H);
+        CHECK(output->child->next->data_len == 20);
+        CHECK(memcmp(output->child->next->data, hash, 20) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* Chained and_v: script [v:after(500)] [v:older(100)] [pk_h(C)]
+     * Decoder produces left-associative form:
+     *   AND_V( AND_V(VERIFY(AFTER(500)), VERIFY(OLDER(100))), PK_H(C) ) */
+    {
+        unsigned char hash[20];
+        /* <500> = push 2 bytes [0xF4, 0x01] (500 little-endian, no sign extension needed) */
+        unsigned char script[] = {
+            0x02, 0xF4, 0x01,               /* push 2 bytes: 500 */
+            OP_CHECKLOCKTIMEVERIFY,
+            OP_VERIFY,
+            0x01, 0x64,                     /* push 1 byte: 100 */
+            OP_CHECKSEQUENCEVERIFY,
+            OP_VERIFY,
+            OP_DUP, OP_HASH160,
+            0x14,                           /* push 20 bytes */
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            OP_EQUALVERIFY
+        };
+        memset(hash, 0xcc, 20);
+        memcpy(script + 12, hash, 20);
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        /* outer AND_V */
+        CHECK(output->kind == KIND_MINISCRIPT_AND_V);
+        /* outer left = inner AND_V( v:after(500), v:older(100) ) */
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_AND_V);
+        CHECK(output->child->child != NULL);
+        CHECK(output->child->child->kind == KIND_MINISCRIPT_VERIFY);
+        CHECK(output->child->child->child != NULL);
+        CHECK(output->child->child->child->kind == KIND_MINISCRIPT_AFTER);
+        CHECK(output->child->child->child->number == 500);
+        CHECK(output->child->child->next != NULL);
+        CHECK(output->child->child->next->kind == KIND_MINISCRIPT_VERIFY);
+        CHECK(output->child->child->next->child != NULL);
+        CHECK(output->child->child->next->child->kind == KIND_MINISCRIPT_OLDER);
+        CHECK(output->child->child->next->child->number == 100);
+        /* outer right = pk_h */
+        CHECK(output->child->next != NULL);
+        CHECK(output->child->next->kind == KIND_MINISCRIPT_PK_H);
+        CHECK(output->child->next->data_len == 20);
+        CHECK(memcmp(output->child->next->data, hash, 20) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    return ok;
+}
+
+static bool test_decode_and_b(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+
+    /* and_b(older(100), s:pk_k(A)):
+     * script: <100> OP_CSV OP_SWAP <A_33bytes> OP_BOOLAND
+     * Tree: AND_B( OLDER(100), SWAP(PK_K(A)) ) */
+    {
+        unsigned char key[33];
+        unsigned char script[2 + 1 + 1 + 1 + 33 + 1]; /* 39 bytes */
+        size_t off = 0;
+        memset(key, 0x02, 33);
+        script[off++] = 0x01; script[off++] = 0x64; /* push 1 byte: 100 */
+        script[off++] = OP_CHECKSEQUENCEVERIFY;
+        script[off++] = OP_SWAP;
+        script[off++] = 0x21; /* push 33 bytes */
+        memcpy(script + off, key, 33); off += 33;
+        script[off++] = OP_BOOLAND;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_AND_B);
+        /* left (B) = older(100) */
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_OLDER);
+        CHECK(output->child->number == 100);
+        /* right (W) = s:pk_k(A) = SWAP wrapping PK_K */
+        CHECK(output->child->next != NULL);
+        CHECK(output->child->next->kind == KIND_MINISCRIPT_SWAP);
+        CHECK(output->child->next->child != NULL);
+        CHECK(output->child->next->child->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->child->next->child->data_len == 33);
+        CHECK(memcmp(output->child->next->child->data, key, 33) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    return ok;
+}
+
 int main(void)
 {
     bool ok = true;
@@ -663,6 +794,14 @@ int main(void)
     }
     if (!test_decode_multi_a()) {
         printf("[test_decode_multi_a] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_and_v()) {
+        printf("[test_decode_and_v] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_and_b()) {
+        printf("[test_decode_and_b] failed!\n");
         ok = false;
     }
     wally_cleanup(0);
