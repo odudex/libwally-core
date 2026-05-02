@@ -751,9 +751,131 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
             break;
         }
 
+        case KIND_MINISCRIPT_MULTI: {
+            size_t child_n = 0;
+            for (const ms_node *c = n->child; c; c = c->next) child_n++;
+            size_t k = (size_t)n->number;
+
+            ms_satisfaction *sats    = wally_malloc(child_n * sizeof(ms_satisfaction));
+            ms_satisfaction *dissats = wally_malloc(child_n * sizeof(ms_satisfaction));
+            if (!sats || !dissats) {
+                wally_free(sats); wally_free(dissats);
+                for (size_t i = 0; i < child_n; i++) {
+                    rsp--;
+                    ms_satisfaction_free(&result[rsp].sat);
+                    ms_satisfaction_free(&result[rsp].dissat);
+                }
+                ms_satisfaction_free(&entry.sat);
+                ms_satisfaction_free(&entry.dissat);
+                ms_satisfaction_init(&entry.sat,    MS_WITNESS_IMPOSSIBLE);
+                ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
+                break;
+            }
+
+            /* Pop children from result stack preserving original key order */
+            for (size_t i = child_n; i-- > 0; ) {
+                sat_dissat_t sd = result[--rsp];
+                sats[i]    = sd.sat;
+                dissats[i] = sd.dissat;
+            }
+
+            for (size_t i = 0; i < child_n; i++)
+                ms_satisfaction_free(&dissats[i]);
+            wally_free(dissats);
+
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+
+            /* dissat: dummy + k zeros = k+1 empty items */
+            ms_satisfaction_init(&entry.dissat, MS_WITNESS_STACK);
+            for (size_t i = 0; i <= k; i++)
+                entry.dissat = satisfaction_push_item(entry.dissat, NULL, 0);
+
+            /* Collect indices of keys with available signatures */
+            size_t *avail = wally_malloc(child_n * sizeof(size_t));
+            if (!avail) {
+                for (size_t i = 0; i < child_n; i++)
+                    ms_satisfaction_free(&sats[i]);
+                wally_free(sats);
+                ms_satisfaction_init(&entry.sat, MS_WITNESS_IMPOSSIBLE);
+                break;
+            }
+            size_t navail = 0;
+            for (size_t i = 0; i < child_n; i++) {
+                if (sats[i].witness.kind == MS_WITNESS_STACK)
+                    avail[navail++] = i;
+            }
+
+            if (navail < k) {
+                for (size_t i = 0; i < child_n; i++)
+                    ms_satisfaction_free(&sats[i]);
+                wally_free(sats);
+                wally_free(avail);
+                ms_satisfaction_init(&entry.sat, MS_WITNESS_IMPOSSIBLE);
+                break;
+            }
+
+            if (navail > k) {
+                /* Sort avail[] by witness weight ascending, keep k lightest */
+                for (size_t i = 1; i < navail; i++) {
+                    size_t tmp = avail[i], j = i;
+                    while (j > 0 &&
+                           witness_weight(&sats[avail[j - 1]].witness) >
+                           witness_weight(&sats[tmp].witness)) {
+                        avail[j] = avail[j - 1];
+                        j--;
+                    }
+                    avail[j] = tmp;
+                }
+                /* Free the heaviest sigs and mark them freed */
+                for (size_t i = k; i < navail; i++) {
+                    ms_satisfaction_free(&sats[avail[i]]);
+                    ms_satisfaction_init(&sats[avail[i]], MS_WITNESS_IMPOSSIBLE);
+                }
+                navail = k;
+                /* Re-sort chosen indices by key position (ascending) */
+                for (size_t i = 1; i < k; i++) {
+                    size_t tmp = avail[i], j = i;
+                    while (j > 0 && avail[j - 1] > tmp) {
+                        avail[j] = avail[j - 1];
+                        j--;
+                    }
+                    avail[j] = tmp;
+                }
+            }
+            /* avail[0..k-1] holds chosen key indices in ascending order */
+
+            /* Free all unchosen sats */
+            {
+                size_t ai = 0;
+                for (size_t i = 0; i < child_n; i++) {
+                    if (ai < k && avail[ai] == i)
+                        ai++;
+                    else
+                        ms_satisfaction_free(&sats[i]);
+                }
+            }
+
+            /* sat: dummy item followed by k signatures in key order */
+            ms_satisfaction_init(&entry.sat, MS_WITNESS_STACK);
+            entry.sat = satisfaction_push_item(entry.sat, NULL, 0);
+            for (size_t i = 0; i < k; i++) {
+                size_t idx = avail[i];
+                if (sats[idx].witness.num_items > 0)
+                    entry.sat = satisfaction_push_item(entry.sat,
+                        sats[idx].witness.items[0].data,
+                        sats[idx].witness.items[0].data_len);
+                ms_satisfaction_free(&sats[idx]);
+            }
+            entry.sat.has_sig = true;
+
+            wally_free(sats);
+            wally_free(avail);
+            break;
+        }
+
         case KIND_MINISCRIPT_PK:
         case KIND_MINISCRIPT_PKH:
-        case KIND_MINISCRIPT_MULTI:
         case KIND_MINISCRIPT_MULTI_A:
         case KIND_MINISCRIPT_MULTI_A_S:
             ms_satisfaction_free(&entry.sat);
