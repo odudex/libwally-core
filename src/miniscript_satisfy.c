@@ -723,10 +723,36 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
             break;
         }
 
+        case KIND_MINISCRIPT_OLDER: {
+            uint32_t lock = (uint32_t)n->number;
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
+            if (stfr && stfr->check_older && stfr->check_older(stfr, lock)) {
+                ms_satisfaction_init(&entry.sat, MS_WITNESS_STACK);
+                entry.sat.relative_timelock = lock;
+            } else {
+                ms_satisfaction_init(&entry.sat, MS_WITNESS_UNAVAILABLE);
+            }
+            break;
+        }
+
+        case KIND_MINISCRIPT_AFTER: {
+            uint32_t lock = (uint32_t)n->number;
+            ms_satisfaction_free(&entry.sat);
+            ms_satisfaction_free(&entry.dissat);
+            ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
+            if (stfr && stfr->check_after && stfr->check_after(stfr, lock)) {
+                ms_satisfaction_init(&entry.sat, MS_WITNESS_STACK);
+                entry.sat.absolute_timelock = lock;
+            } else {
+                ms_satisfaction_init(&entry.sat, MS_WITNESS_UNAVAILABLE);
+            }
+            break;
+        }
+
         case KIND_MINISCRIPT_PK:
         case KIND_MINISCRIPT_PKH:
-        case KIND_MINISCRIPT_OLDER:
-        case KIND_MINISCRIPT_AFTER:
         case KIND_MINISCRIPT_MULTI:
         case KIND_MINISCRIPT_MULTI_A:
         case KIND_MINISCRIPT_MULTI_A_S:
