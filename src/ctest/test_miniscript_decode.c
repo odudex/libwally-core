@@ -1032,6 +1032,158 @@ static bool test_decode_thresh(void)
     return ok;
 }
 
+static bool test_decode_wrappers(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+
+    /* c:pk_k(A) = <A_33bytes> OP_CHECKSIG */
+    {
+        unsigned char key[33];
+        unsigned char script[35];
+        memset(key, 0x02, 33);
+        script[0] = 0x21;
+        memcpy(script + 1, key, 33);
+        script[34] = OP_CHECKSIG;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_CHECK);
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->child->data_len == 33);
+        CHECK(memcmp(output->child->data, key, 33) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* n:older(100) = <100> OP_CSV OP_0NOTEQUAL */
+    {
+        unsigned char script[] = { 0x01, 0x64, OP_CHECKSEQUENCEVERIFY, OP_0NOTEQUAL };
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_ZERO_NOT_EQUAL);
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_OLDER);
+        CHECK(output->child->number == 100);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* d:pk_k(A) = OP_DUP OP_IF <A_33bytes> OP_ENDIF */
+    {
+        unsigned char key[33];
+        unsigned char script[37];
+        size_t off = 0;
+        memset(key, 0x02, 33);
+        script[off++] = OP_DUP;
+        script[off++] = OP_IF;
+        script[off++] = 0x21;
+        memcpy(script + off, key, 33); off += 33;
+        script[off++] = OP_ENDIF;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_DUP_IF);
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->child->data_len == 33);
+        CHECK(memcmp(output->child->data, key, 33) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* j:pk_k(A) = OP_SIZE OP_0NOTEQUAL OP_IF <A_33bytes> OP_ENDIF */
+    {
+        unsigned char key[33];
+        unsigned char script[38];
+        size_t off = 0;
+        memset(key, 0x02, 33);
+        script[off++] = OP_SIZE;
+        script[off++] = OP_0NOTEQUAL;
+        script[off++] = OP_IF;
+        script[off++] = 0x21;
+        memcpy(script + off, key, 33); off += 33;
+        script[off++] = OP_ENDIF;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_NON_ZERO);
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->child->data_len == 33);
+        CHECK(memcmp(output->child->data, key, 33) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* t:older(100) = <100> OP_CSV OP_1 */
+    {
+        unsigned char script[] = { 0x01, 0x64, OP_CHECKSEQUENCEVERIFY, OP_1 };
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_AND_V);
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_OLDER);
+        CHECK(output->child->number == 100);
+        CHECK(output->child->next != NULL);
+        CHECK(output->child->next->kind == KIND_MINISCRIPT_JUST_1);
+        CHECK(output->child->next->next == NULL);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* l:pk_k(A) = OP_IF OP_0 OP_ELSE <A_33bytes> OP_ENDIF */
+    {
+        unsigned char key[33];
+        unsigned char script[38];
+        size_t off = 0;
+        memset(key, 0x02, 33);
+        script[off++] = OP_IF;
+        script[off++] = OP_0;
+        script[off++] = OP_ELSE;
+        script[off++] = 0x21;
+        memcpy(script + off, key, 33); off += 33;
+        script[off++] = OP_ENDIF;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_OR_I);
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_JUST_0);
+        CHECK(output->child->next != NULL);
+        CHECK(output->child->next->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->child->next->data_len == 33);
+        CHECK(memcmp(output->child->next->data, key, 33) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* u:pk_k(A) = OP_IF <A_33bytes> OP_ELSE OP_0 OP_ENDIF */
+    {
+        unsigned char key[33];
+        unsigned char script[38];
+        size_t off = 0;
+        memset(key, 0x02, 33);
+        script[off++] = OP_IF;
+        script[off++] = 0x21;
+        memcpy(script + off, key, 33); off += 33;
+        script[off++] = OP_ELSE;
+        script[off++] = OP_0;
+        script[off++] = OP_ENDIF;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_OR_I);
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->child->data_len == 33);
+        CHECK(memcmp(output->child->data, key, 33) == 0);
+        CHECK(output->child->next != NULL);
+        CHECK(output->child->next->kind == KIND_MINISCRIPT_JUST_0);
+        ms_node_free(output); output = NULL;
+    }
+
+    return ok;
+}
+
 int main(void)
 {
     bool ok = true;
@@ -1081,6 +1233,10 @@ int main(void)
     }
     if (!test_decode_thresh()) {
         printf("[test_decode_thresh] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_wrappers()) {
+        printf("[test_decode_wrappers] failed!\n");
         ok = false;
     }
     wally_cleanup(0);

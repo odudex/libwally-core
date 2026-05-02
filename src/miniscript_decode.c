@@ -876,6 +876,28 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
                 nt.kind = NT_EXPRESSION; nt.k = nt.n = 0;
                 if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
                 break;
+            } else if (tok->kind == TK_CHECK_SIG) {
+                tk_cursor_next(&cursor); /* consume TK_CHECK_SIG */
+                nt.kind = NT_CHECK; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_EXPRESSION;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                break;
+            } else if (tok->kind == TK_ZERO_NOT_EQUAL) {
+                tk_cursor_next(&cursor); /* consume TK_ZERO_NOT_EQUAL */
+                nt.kind = NT_ZERO_NOT_EQUAL; nt.k = nt.n = 0;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                nt.kind = NT_EXPRESSION;
+                if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
+                break;
+            } else if (tok->kind == TK_NUM && (tok->data.num == 0 || tok->data.num == 1)) {
+                tok = tk_cursor_next(&cursor); /* consume TK_NUM */
+                uint32_t just_kind = (tok->data.num == 0) ? KIND_MINISCRIPT_JUST_0 : KIND_MINISCRIPT_JUST_1;
+                ms_node *jn = node_alloc(just_kind);
+                if (!jn) { ret = WALLY_ENOMEM; goto cleanup; }
+                ret = terminal_stack_push(term, jn);
+                if (ret != WALLY_OK) { ms_node_free(jn); goto cleanup; }
+                break;
             }
             ret = WALLY_EINVAL;
             goto cleanup;
