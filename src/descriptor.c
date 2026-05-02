@@ -2,6 +2,7 @@
 
 #include "script.h"
 #include "script_int.h"
+#include "descriptor_int.h"
 
 #include <include/wally_address.h>
 #include <include/wally_bip32.h>
@@ -189,23 +190,6 @@ static const struct addr_ver_t g_address_versions[] = {
     },
 };
 
-/* A node in a parsed miniscript expression */
-typedef struct ms_node_t {
-    struct ms_node_t *next;
-    struct ms_node_t *child;
-    struct ms_node_t *parent;
-    uint32_t kind;
-    uint32_t type_properties;
-    int64_t number;
-    const char *child_path;
-    const char *data;
-    uint32_t data_len;
-    uint32_t child_path_len;
-    char wrapper_str[12];
-    unsigned short flags; /* WALLY_MS_IS_ flags */
-    unsigned char builtin;
-} ms_node;
-
 typedef struct wally_descriptor {
     char *src; /* The canonical source script */
     size_t src_len; /* Length of src */
@@ -232,21 +216,6 @@ static int ctx_add_key_node(ms_ctx *ctx, ms_node *node)
 }
 
 static int ensure_unique_policy_keys(const ms_ctx *ctx);
-
-/* Built-in miniscript expressions */
-typedef int (*node_verify_fn_t)(ms_ctx *ctx, ms_node *node);
-typedef int (*node_gen_fn_t)(ms_ctx *ctx, ms_node *node,
-                             unsigned char *script, size_t script_len, size_t *written);
-
-struct ms_builtin_t {
-    const char *name;
-    const uint32_t name_len;
-    const uint32_t kind;
-    const uint32_t type_properties;
-    const uint32_t child_count; /* Number of expected children */
-    const node_verify_fn_t verify_fn;
-    const node_gen_fn_t generate_fn;
-};
 
 /* FIXME: the max is actually 20 in a witness script */
 #define CHECKMULTISIG_NUM_KEYS_MAX 15
@@ -2322,7 +2291,7 @@ static int generate_inplace_wrappers(ms_node *node,
 }
 
 #define I_NAME(name) name, sizeof(name) - 1
-static const struct ms_builtin_t g_builtins[] = {
+const struct ms_builtin_t g_builtins[] = {
     /* output descriptor */
     {
         I_NAME("sh"),
