@@ -342,3 +342,34 @@ void satisfaction_or_i(ms_satisfaction sat_l, ms_satisfaction dissat_l,
         satisfaction_push_item(dissat_l, push_1_data, 1),
         satisfaction_push_item(dissat_r, NULL, 0));
 }
+
+/*
+ * andor(X, Y, Z) satisfaction and dissatisfaction.
+ *
+ * Script: [X] NOTIF [Z] ELSE [Y] ENDIF
+ * Witnesses:
+ *   sat  = best( concat(sat_y, sat_x), concat(sat_z, dissat_x) )
+ *   dsat = concat(dissat_z, dissat_x)
+ *
+ * (inner/Y-Z items precede outer/X in array)
+ *
+ * dissat_y is unused: the Y branch is only reached when X is satisfied,
+ * so the overall dissatisfaction always takes the Z path (dissat_x + dissat_z).
+ *
+ * Mirrors rust-miniscript Terminal::AndOr arm in sat_dissat.rs.
+ */
+void satisfaction_andor(ms_satisfaction sat_x, ms_satisfaction dissat_x,
+                        ms_satisfaction sat_y, ms_satisfaction dissat_y,
+                        ms_satisfaction sat_z, ms_satisfaction dissat_z,
+                        ms_satisfaction *sat_out, ms_satisfaction *dissat_out)
+{
+    ms_satisfaction dissat_x_clone = ms_satisfaction_clone(&dissat_x);
+
+    ms_satisfaction_free(&dissat_y);
+
+    *dissat_out = satisfaction_concat(dissat_z, dissat_x_clone);
+
+    *sat_out = satisfaction_best(
+        satisfaction_concat(sat_y, sat_x),
+        satisfaction_concat(sat_z, dissat_x));
+}
