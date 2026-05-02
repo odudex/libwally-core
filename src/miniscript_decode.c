@@ -685,6 +685,75 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
                     if ((ret = nonterm_stack_push(nonterm, nt)) != WALLY_OK) goto cleanup;
                 }
                 break;
+            } else if (tok->kind == TK_CHECK_MULTI_SIG) {
+                const token_t *t2;
+                uint32_t n, k;
+                ms_node *prev = NULL, *parent;
+
+                tk_cursor_next(&cursor); /* consume TK_CHECK_MULTI_SIG */
+
+                t2 = tk_cursor_next(&cursor);
+                if (!t2 || t2->kind != TK_NUM || t2->data.num < 1 || t2->data.num > 20) {
+                    ret = WALLY_EINVAL;
+                    goto cleanup;
+                }
+                n = t2->data.num;
+
+                for (uint32_t i = 0; i < n; i++) {
+                    const token_t *kt = tk_cursor_next(&cursor);
+                    const unsigned char *kbytes;
+                    size_t klen;
+                    ms_node *key_node;
+                    unsigned char *buf;
+
+                    if (!kt || (kt->kind != TK_BYTES33 && kt->kind != TK_BYTES65)) {
+                        ms_node *p = prev;
+                        while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                        ret = WALLY_EINVAL;
+                        goto cleanup;
+                    }
+                    if (kt->kind == TK_BYTES33) { kbytes = kt->data.bytes33; klen = 33; }
+                    else { kbytes = kt->data.bytes65; klen = 65; }
+
+                    key_node = node_alloc(KIND_MINISCRIPT_PK_K);
+                    buf = key_node ? wally_malloc(klen) : NULL;
+                    if (!key_node || !buf) {
+                        ms_node_free(key_node);
+                        ms_node *p = prev;
+                        while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                        ret = WALLY_ENOMEM;
+                        goto cleanup;
+                    }
+                    memcpy(buf, kbytes, klen);
+                    key_node->data = (const char *)buf;
+                    key_node->data_len = (uint32_t)klen;
+                    key_node->next = prev;
+                    prev = key_node;
+                }
+
+                t2 = tk_cursor_next(&cursor);
+                if (!t2 || t2->kind != TK_NUM || t2->data.num < 1 || t2->data.num > n) {
+                    ms_node *p = prev;
+                    while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                    ret = WALLY_EINVAL;
+                    goto cleanup;
+                }
+                k = t2->data.num;
+
+                parent = node_alloc(KIND_MINISCRIPT_MULTI);
+                if (!parent) {
+                    ms_node *p = prev;
+                    while (p) { ms_node *nx = p->next; p->next = NULL; ms_node_free(p); p = nx; }
+                    ret = WALLY_ENOMEM;
+                    goto cleanup;
+                }
+                parent->number = (int64_t)k;
+                { ms_node *p = prev; while (p) { p->parent = parent; p = p->next; } }
+                parent->child = prev;
+
+                ret = terminal_stack_push(term, parent);
+                if (ret != WALLY_OK) { ms_node_free(parent); goto cleanup; }
+                break;
             }
             ret = WALLY_EINVAL;
             goto cleanup;
