@@ -944,6 +944,94 @@ static bool test_decode_andor(void)
     return ok;
 }
 
+static bool test_decode_thresh(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+
+    /* thresh(2, older(100), s:pk_k(A)):
+     * script: <100> OP_CSV  OP_SWAP <A_33bytes> OP_ADD  OP_2 OP_EQUAL
+     * Tree: THRESH(2, OLDER(100), SWAP(PK_K(A))) */
+    {
+        unsigned char keyA[33];
+        unsigned char script[2 + 1 + 1 + 1 + 33 + 1 + 1 + 1]; /* 41 bytes */
+        size_t off = 0;
+        memset(keyA, 0x02, 33);
+        script[off++] = 0x01; script[off++] = 0x64; /* push 1 byte: 100 */
+        script[off++] = OP_CHECKSEQUENCEVERIFY;
+        script[off++] = OP_SWAP;
+        script[off++] = 0x21; memcpy(script + off, keyA, 33); off += 33;
+        script[off++] = OP_ADD;
+        script[off++] = OP_2;
+        script[off++] = OP_EQUAL;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_THRESH);
+        CHECK(output->number == 2);
+        /* first child = older(100) (e, base expr) */
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_OLDER);
+        CHECK(output->child->number == 100);
+        /* second child = s:pk_k(A) (W expr) */
+        CHECK(output->child->next != NULL);
+        CHECK(output->child->next->kind == KIND_MINISCRIPT_SWAP);
+        CHECK(output->child->next->child != NULL);
+        CHECK(output->child->next->child->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->child->next->child->data_len == 33);
+        CHECK(memcmp(output->child->next->child->data, keyA, 33) == 0);
+        CHECK(output->child->next->next == NULL);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* thresh(3, older(100), s:pk_k(A), s:pk_k(B)):
+     * script: <100> OP_CSV  OP_SWAP <A> OP_ADD  OP_SWAP <B> OP_ADD  OP_3 OP_EQUAL
+     * Tree: THRESH(3, OLDER(100), SWAP(PK_K(A)), SWAP(PK_K(B))) */
+    {
+        unsigned char keyA[33], keyB[33];
+        unsigned char script[2 + 1 + 1 + 1 + 33 + 1 + 1 + 1 + 33 + 1 + 1 + 1]; /* 77 bytes */
+        size_t off = 0;
+        memset(keyA, 0x02, 33);
+        memset(keyB, 0x03, 33);
+        script[off++] = 0x01; script[off++] = 0x64;
+        script[off++] = OP_CHECKSEQUENCEVERIFY;
+        script[off++] = OP_SWAP;
+        script[off++] = 0x21; memcpy(script + off, keyA, 33); off += 33;
+        script[off++] = OP_ADD;
+        script[off++] = OP_SWAP;
+        script[off++] = 0x21; memcpy(script + off, keyB, 33); off += 33;
+        script[off++] = OP_ADD;
+        script[off++] = OP_3;
+        script[off++] = OP_EQUAL;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_THRESH);
+        CHECK(output->number == 3);
+        /* first child = older(100) */
+        CHECK(output->child != NULL);
+        CHECK(output->child->kind == KIND_MINISCRIPT_OLDER);
+        CHECK(output->child->number == 100);
+        /* second child = s:pk_k(A) */
+        CHECK(output->child->next != NULL);
+        CHECK(output->child->next->kind == KIND_MINISCRIPT_SWAP);
+        CHECK(output->child->next->child != NULL);
+        CHECK(output->child->next->child->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(memcmp(output->child->next->child->data, keyA, 33) == 0);
+        /* third child = s:pk_k(B) */
+        CHECK(output->child->next->next != NULL);
+        CHECK(output->child->next->next->kind == KIND_MINISCRIPT_SWAP);
+        CHECK(output->child->next->next->child != NULL);
+        CHECK(output->child->next->next->child->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(memcmp(output->child->next->next->child->data, keyB, 33) == 0);
+        CHECK(output->child->next->next->next == NULL);
+        ms_node_free(output); output = NULL;
+    }
+
+    return ok;
+}
+
 int main(void)
 {
     bool ok = true;
@@ -989,6 +1077,10 @@ int main(void)
     }
     if (!test_decode_andor()) {
         printf("[test_decode_andor] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_thresh()) {
+        printf("[test_decode_thresh] failed!\n");
         ok = false;
     }
     wally_cleanup(0);

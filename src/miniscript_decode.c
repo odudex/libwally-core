@@ -1013,15 +1013,16 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
             ms_node *parent = node_alloc(KIND_MINISCRIPT_THRESH);
             if (!parent) { ret = WALLY_ENOMEM; goto cleanup; }
             parent->number = (int64_t)cur.k;
-            ms_node *prev  = NULL;
+            ms_node *head = NULL, *tail = NULL;
             for (uint32_t i = 0; i < cur.n; i++) {
                 ms_node *child = terminal_stack_pop(term);
                 if (!child) { ms_node_free(parent); ret = WALLY_EINVAL; goto cleanup; }
                 child->parent = parent;
-                child->next   = prev;
-                prev          = child;
+                child->next   = NULL;
+                if (!head) { head = tail = child; }
+                else       { tail->next = child; tail = child; }
             }
-            parent->child = prev;
+            parent->child = head;
             if ((ret = terminal_stack_push(term, parent)) != WALLY_OK) {
                 ms_node_free(parent);
                 goto cleanup;
