@@ -5558,6 +5558,90 @@ static bool p2wsh_check_after(const ms_satisfier *stfr, uint32_t lock)
     return locktime >= lock;
 }
 
+typedef struct p2tr_sat_ctx_t {
+    const struct wally_psbt       *psbt;
+    const struct wally_psbt_input *input;
+    size_t                         index;
+    const unsigned char           *leaf_hash; /* 32-byte leaf hash for current leaf */
+} p2tr_sat_ctx;
+
+static bool p2tr_lookup_sig(const ms_satisfier *stfr,
+                             const unsigned char *pk, size_t pk_len,
+                             unsigned char *sig_out, size_t *sig_len_out)
+{
+    const p2tr_sat_ctx *ctx = stfr->user_data;
+    unsigned char key[EC_XONLY_PUBLIC_KEY_LEN + SHA256_LEN];
+    size_t idx;
+    if (pk_len != EC_XONLY_PUBLIC_KEY_LEN)
+        return false;
+    memcpy(key, pk, EC_XONLY_PUBLIC_KEY_LEN);
+    memcpy(key + EC_XONLY_PUBLIC_KEY_LEN, ctx->leaf_hash, SHA256_LEN);
+    if (wally_map_find(&ctx->input->taproot_leaf_signatures, key, sizeof(key), &idx) != WALLY_OK || !idx)
+        return false;
+    {
+        const struct wally_map_item *item = &ctx->input->taproot_leaf_signatures.items[idx - 1];
+        memcpy(sig_out, item->value, item->value_len);
+        *sig_len_out = item->value_len;
+    }
+    return true;
+}
+
+static bool p2tr_lookup_pkh(const ms_satisfier *stfr,
+                             const unsigned char *hash20,
+                             unsigned char *pk_out, size_t *pk_len_out,
+                             unsigned char *sig_out, size_t *sig_len_out)
+{
+    const p2tr_sat_ctx *ctx = stfr->user_data;
+    size_t i;
+    for (i = 0; i < ctx->input->keypaths.num_items; i++) {
+        const struct wally_map_item *kp = &ctx->input->keypaths.items[i];
+        unsigned char h[HASH160_LEN];
+        if (wally_hash160(kp->key, kp->key_len, h, sizeof(h)) != WALLY_OK)
+            continue;
+        if (memcmp(h, hash20, HASH160_LEN) != 0)
+            continue;
+        memcpy(pk_out, kp->key, kp->key_len);
+        *pk_len_out = kp->key_len;
+        *sig_len_out = 0;
+        p2tr_lookup_sig(stfr, kp->key, kp->key_len, sig_out, sig_len_out);
+        return true;
+    }
+    return false;
+}
+
+static bool p2tr_lookup_preimage(const ms_satisfier *stfr,
+                                  const unsigned char *hash, size_t hash_len,
+                                  uint32_t hash_type,
+                                  unsigned char preimage_out[32])
+{
+    const p2tr_sat_ctx *ctx = stfr->user_data;
+    const struct wally_map_item *item =
+        find_preimage(ctx->input, (unsigned char)hash_type, hash, hash_len);
+    if (!item || item->value_len > 32)
+        return false;
+    memcpy(preimage_out, item->value, item->value_len);
+    return true;
+}
+
+static bool p2tr_check_older(const ms_satisfier *stfr, uint32_t lock)
+{
+    const p2tr_sat_ctx *ctx = stfr->user_data;
+    return is_input_csv_expired(ctx->psbt, ctx->input, ctx->index, lock);
+}
+
+static bool p2tr_check_after(const ms_satisfier *stfr, uint32_t lock)
+{
+    const p2tr_sat_ctx *ctx = stfr->user_data;
+    uint32_t locktime;
+    if (ctx->psbt->version == PSBT_0)
+        locktime = ctx->psbt->tx->locktime;
+    else
+        locktime = ctx->psbt->has_fallback_locktime ? ctx->psbt->fallback_locktime : 0u;
+    if ((locktime < 500000000u) != (lock < 500000000u))
+        return false;
+    return locktime >= lock;
+}
+
 static bool finalize_p2wsh(const struct wally_psbt *psbt,
                            struct wally_psbt_input *input, size_t index)
 {
@@ -5756,6 +5840,167 @@ static int witness_append_all(struct wally_tx_witness_stack *dst,
     return WALLY_OK;
 }
 
+/* P5.2.B — Select the taproot leaf that produces the smallest satisfiable witness.
+ * On success, sets output pointers. Caller owns *best_witness_out and must free it. */
+static int select_best_tapscript_leaf(
+    const struct wally_psbt *psbt,
+    const struct wally_psbt_input *input,
+    size_t index,
+    struct wally_tx_witness_stack **best_witness_out,
+    const unsigned char **best_script_out, size_t *best_script_len_out,
+    const unsigned char **best_ctrl_out,   size_t *best_ctrl_len_out)
+{
+    size_t i, best_weight = SIZE_MAX;
+    ms_satisfaction best_sat;
+    bool any_satisfiable = false;
+
+    memset(&best_sat, 0, sizeof(best_sat));
+    *best_witness_out = NULL;
+    *best_script_out = NULL;
+    *best_script_len_out = 0;
+    *best_ctrl_out = NULL;
+    *best_ctrl_len_out = 0;
+
+    for (i = 0; i < input->taproot_leaf_scripts.num_items; i++) {
+        const struct wally_map_item *ls = &input->taproot_leaf_scripts.items[i];
+        const unsigned char *ctrl = ls->key;
+        size_t ctrl_len = ls->key_len;
+        const unsigned char *script = ls->value;
+        size_t script_len = ls->value_len;
+        unsigned char leaf_version = ctrl[0] & 0xfeu;
+        unsigned char leaf_hash[SHA256_LEN];
+        ms_node *node = NULL;
+        ms_satisfaction sat, dissat;
+        size_t j, w;
+
+        if (tapleaf_hash(leaf_version, script, script_len, leaf_hash) != WALLY_OK)
+            continue;
+
+        if (decode_script_to_node(script, script_len, WALLY_MINISCRIPT_TAPSCRIPT, &node) != WALLY_OK || !node)
+            continue;
+
+        {
+            p2tr_sat_ctx ctx = { psbt, input, index, leaf_hash };
+            ms_satisfier stfr = {
+                p2tr_lookup_sig,
+                p2tr_lookup_pkh,
+                p2tr_lookup_preimage,
+                p2tr_check_older,
+                p2tr_check_after,
+                leaf_hash,
+                &ctx
+            };
+            memset(&sat, 0, sizeof(sat));
+            memset(&dissat, 0, sizeof(dissat));
+            satisfy_node(node, &stfr, false, &sat, &dissat);
+        }
+        ms_node_free(node);
+        ms_satisfaction_free(&dissat);
+
+        if (sat.witness.kind != MS_WITNESS_STACK) {
+            ms_satisfaction_free(&sat);
+            continue;
+        }
+
+        /* Compute witness weight from ms_witness items */
+        w = varint_get_length(sat.witness.num_items + 2);
+        for (j = 0; j < sat.witness.num_items; j++)
+            w += varint_get_length(sat.witness.items[j].data_len) + sat.witness.items[j].data_len;
+        w += varint_get_length(script_len) + script_len;
+        w += varint_get_length(ctrl_len) + ctrl_len;
+
+        if (!any_satisfiable || w < best_weight) {
+            ms_satisfaction_free(&best_sat);
+            best_sat = sat;
+            *best_script_out = script;
+            *best_script_len_out = script_len;
+            *best_ctrl_out = ctrl;
+            *best_ctrl_len_out = ctrl_len;
+            best_weight = w;
+            any_satisfiable = true;
+        } else {
+            ms_satisfaction_free(&sat);
+        }
+    }
+
+    if (!any_satisfiable)
+        return WALLY_EINVAL;
+
+    /* Build the final witness stack from the best satisfaction */
+    {
+        struct wally_tx_witness_stack *ws = NULL;
+        if (wally_tx_witness_stack_init_alloc(best_sat.witness.num_items + 2, &ws) != WALLY_OK) {
+            ms_satisfaction_free(&best_sat);
+            return WALLY_ENOMEM;
+        }
+        for (i = 0; i < best_sat.witness.num_items; i++) {
+            if (wally_tx_witness_stack_add(ws,
+                    best_sat.witness.items[i].data,
+                    best_sat.witness.items[i].data_len) != WALLY_OK) {
+                wally_tx_witness_stack_free(ws);
+                ms_satisfaction_free(&best_sat);
+                return WALLY_ERROR;
+            }
+        }
+        ms_satisfaction_free(&best_sat);
+        *best_witness_out = ws;
+    }
+    return WALLY_OK;
+}
+
+/* P5.3.A — Finalize a P2TR input via script-path spend.
+ * Returns true on success (sets input->final_witness). */
+static bool finalize_p2tr_script_path(const struct wally_psbt *psbt,
+                                       struct wally_psbt_input *input,
+                                       size_t index)
+{
+    struct wally_tx_witness_stack *witness = NULL;
+    const unsigned char *script, *ctrl;
+    size_t script_len, ctrl_len;
+    int ret;
+
+    /* Select the best (smallest weight) satisfiable leaf */
+    ret = select_best_tapscript_leaf(psbt, input, index, &witness,
+                                     &script, &script_len,
+                                     &ctrl,   &ctrl_len);
+    if (ret != WALLY_OK || !witness)
+        return false;
+
+    /* Append the leaf script as the second-to-last witness item */
+    if (wally_tx_witness_stack_add(witness, script, script_len) != WALLY_OK)
+        goto fail;
+
+    /* Append the control block as the last witness item */
+    if (wally_tx_witness_stack_add(witness, ctrl, ctrl_len) != WALLY_OK)
+        goto fail;
+
+    /* Install as final witness */
+    wally_tx_witness_stack_free(input->final_witness);
+    input->final_witness = witness;
+    return true;
+
+fail:
+    wally_tx_witness_stack_free(witness);
+    return false;
+}
+
+/* P5.3.B — Finalize P2TR: try key-path first, then script-path */
+static bool finalize_p2tr(const struct wally_psbt *psbt,
+                           struct wally_psbt_input *input,
+                           size_t index)
+{
+    const struct wally_map_item *sig;
+
+    /* Try key-path spend first (TAP_KEY_SIG present) */
+    sig = wally_map_get_integer(&input->psbt_fields, PSBT_IN_TAP_KEY_SIG);
+    if (sig && wally_witness_p2tr_from_sig(sig->value, sig->value_len,
+                                           &input->final_witness) == WALLY_OK)
+        return true;
+
+    /* Fall back to script-path spend via miniscript leaf satisfaction */
+    return finalize_p2tr_script_path(psbt, input, index);
+}
+
 static bool is_input_csv_expired(const struct wally_psbt *psbt,
                                  const struct wally_psbt_input *input,
                                  size_t index, uint32_t blocks)
@@ -5894,7 +6139,7 @@ int wally_psbt_finalize_input(struct wally_psbt *psbt, size_t index, uint32_t fl
             return WALLY_OK;
         break;
     case WALLY_SCRIPT_TYPE_P2TR:
-        if (!finalize_p2tr(input))
+        if (!finalize_p2tr(psbt, input, index))
             return WALLY_OK;
         break;
     case WALLY_SCRIPT_TYPE_CSV2OF2_1:
