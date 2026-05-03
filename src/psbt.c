@@ -5706,88 +5706,90 @@ cleanup:
     return ret;
 }
 
-static bool finalize_multisig(struct wally_psbt_input *input,
+static bool finalize_multisig(const struct wally_psbt *psbt,
+                              struct wally_psbt_input *input, size_t index,
                               const unsigned char *out_script, size_t out_script_len,
                               bool is_witness, bool is_p2sh)
 {
-    unsigned char sigs[EC_SIGNATURE_LEN * 15];
-    uint32_t sighashes[15];
-    const unsigned char *p = out_script, *end = p + out_script_len;
-    size_t threshold, n_pubkeys, n_found = 0, i;
+    ms_node *node = NULL;
+    ms_satisfaction sat, dissat;
+    struct wally_tx_witness_stack *witness = NULL;
+    struct p2wsh_sat_ctx ctx = { psbt, input, index };
+    ms_satisfier stfr = {
+        p2wsh_lookup_sig,
+        p2wsh_lookup_pkh,
+        p2wsh_lookup_preimage,
+        p2wsh_check_older,
+        p2wsh_check_after,
+        NULL,
+        &ctx
+    };
     bool ret = false;
+    size_t i;
 
-    if (!script_is_op_n(out_script[0], false, &threshold) ||
-        input->signatures.num_items < threshold ||
-        !script_is_op_n(out_script[out_script_len - 2], false, &n_pubkeys) ||
-        n_pubkeys > 15)
-        goto fail; /* Failed to parse or invalid script */
+    if (decode_script_to_node(out_script, out_script_len, 0, &node) != WALLY_OK || !node)
+        return false;
 
-    ++p; /* Skip the threshold */
+    memset(&sat, 0, sizeof(sat));
+    memset(&dissat, 0, sizeof(dissat));
+    satisfy_node(node, &stfr, false, &sat, &dissat);
+    ms_node_free(node);
+    node = NULL;
 
-    /* Collect signatures corresponding to pubkeys in the multisig script */
-    for (i = 0; i < n_pubkeys && p < end; ++i) {
-        size_t opcode_size, found_pubkey_len;
-        const unsigned char *found_pubkey;
-        const struct wally_map_item *found_sig;
-        size_t sig_index;
-
-        if (script_get_push_size_from_bytes(p, end - p,
-                                            &found_pubkey_len) != WALLY_OK ||
-            script_get_push_opcode_size_from_bytes(p, end - p,
-                                                   &opcode_size) != WALLY_OK)
-            goto fail; /* Script is malformed, bail */
-
-        p += opcode_size;
-        found_pubkey = p;
-        p += found_pubkey_len; /* Move to next pubkey push */
-
-        /* Find the associated signature for this pubkey */
-        if (wally_map_find(&input->signatures,
-                           found_pubkey, found_pubkey_len,
-                           &sig_index) != WALLY_OK || !sig_index)
-            continue; /* Not found: try the next pubkey in the script */
-
-        found_sig = &input->signatures.items[sig_index - 1];
-
-        /* Sighash is appended to the DER signature */
-        sighashes[n_found] = found_sig->value[found_sig->value_len - 1];
-        /* Convert the DER signature to compact form */
-        if (wally_ec_sig_from_der(found_sig->value, found_sig->value_len - 1,
-                                  sigs + n_found * EC_SIGNATURE_LEN,
-                                  EC_SIGNATURE_LEN) != WALLY_OK)
-            continue; /* Failed to parse, try next pubkey */
-
-        if (++n_found == threshold)
-            break; /* We have enough signatures, ignore any more */
-    }
-
-    if (n_found != threshold)
-        goto fail; /* Failed to find enough signatures */
+    if (sat.witness.kind == MS_WITNESS_IMPOSSIBLE)
+        goto cleanup;
 
     if (is_witness) {
-        if (wally_witness_multisig_from_bytes(out_script, out_script_len,
-                                              sigs, n_found * EC_SIGNATURE_LEN,
-                                              sighashes, n_found,
-                                              0, &input->final_witness) != WALLY_OK)
-            goto fail;
-
-        if (is_p2sh && !finalize_p2sh_wrapped(input))
-            goto fail;
+        if (wally_tx_witness_stack_init_alloc(sat.witness.num_items + 1, &witness) != WALLY_OK)
+            goto cleanup;
+        for (i = 0; i < sat.witness.num_items; i++) {
+            if (wally_tx_witness_stack_add(witness,
+                                           sat.witness.items[i].data,
+                                           sat.witness.items[i].data_len) != WALLY_OK)
+                goto cleanup;
+        }
+        if (wally_tx_witness_stack_add(witness, out_script, out_script_len) != WALLY_OK)
+            goto cleanup;
+        wally_tx_witness_stack_free(input->final_witness);
+        input->final_witness = witness;
+        witness = NULL;
+        ret = true;
+        if (is_p2sh)
+            ret = finalize_p2sh_wrapped(input);
     } else {
         unsigned char script[WALLY_SCRIPTSIG_MAX_LEN];
-        size_t script_len;
-
-        if (wally_scriptsig_multisig_from_bytes(out_script, out_script_len,
-                                                sigs, n_found * EC_SIGNATURE_LEN,
-                                                sighashes, n_found, 0,
-                                                script, sizeof(script), &script_len) != WALLY_OK ||
-            script_len > sizeof(script) ||
-            wally_psbt_input_set_final_scriptsig(input, script, script_len) != WALLY_OK)
-            goto fail;
+        size_t script_len = 0, avail = sizeof(script), pushed;
+        /* Item 0 is the empty OP_CHECKMULTISIG bug element → emit OP_0 */
+        if (avail < 1 || sat.witness.num_items < 1)
+            goto cleanup;
+        script[script_len++] = OP_0;
+        avail--;
+        /* Push the remaining items (the DER+sighash signatures) */
+        for (i = 1; i < sat.witness.num_items; i++) {
+            if (wally_script_push_from_bytes(sat.witness.items[i].data,
+                                             sat.witness.items[i].data_len,
+                                             0, script + script_len, avail,
+                                             &pushed) != WALLY_OK)
+                goto cleanup_legacy;
+            script_len += pushed;
+            avail -= pushed;
+        }
+        /* Push the multisig script itself (redeem script for P2SH, or bare script) */
+        if (wally_script_push_from_bytes(out_script, out_script_len,
+                                         0, script + script_len, avail,
+                                         &pushed) != WALLY_OK)
+            goto cleanup_legacy;
+        script_len += pushed;
+        if (wally_psbt_input_set_final_scriptsig(input, script, script_len) == WALLY_OK)
+            ret = true;
+cleanup_legacy:
+        wally_clear(script, sizeof(script));
     }
-    ret = true;
-fail:
-    wally_clear_2(sigs, sizeof(sigs), sighashes, sizeof(sighashes));
+
+cleanup:
+    ms_satisfaction_free(&sat);
+    ms_satisfaction_free(&dissat);
+    wally_tx_witness_stack_free(witness);
     return ret;
 }
 
@@ -6135,7 +6137,7 @@ int wally_psbt_finalize_input(struct wally_psbt *psbt, size_t index, uint32_t fl
             return WALLY_OK;
         break;
     case WALLY_SCRIPT_TYPE_MULTISIG:
-        if (!finalize_multisig(input, out_script, out_script_len, is_witness, is_p2sh))
+        if (!finalize_multisig(psbt, input, index, out_script, out_script_len, is_witness, is_p2sh))
             return WALLY_OK;
         break;
     case WALLY_SCRIPT_TYPE_P2TR:
