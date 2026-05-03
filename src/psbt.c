@@ -12,6 +12,8 @@
 #include "script.h"
 #include "pullpush.h"
 #include "tx_io.h"
+#include "descriptor_int.h"
+#include "miniscript_decode.h"
 
 /* TODO:
  * - When setting utxo in an input via the psbt (in the SWIG
@@ -5467,10 +5469,157 @@ static bool finalize_p2wpkh(struct wally_psbt_input *input)
     return finalize_p2sh_wrapped(input);
 }
 
-static bool finalize_p2wsh(struct wally_psbt_input *input)
+static bool is_input_csv_expired(const struct wally_psbt *psbt,
+                                 const struct wally_psbt_input *input,
+                                 size_t index, uint32_t blocks);
+static const struct wally_map_item *find_preimage(
+    const struct wally_psbt_input *input,
+    unsigned char type,
+    const unsigned char *hash, size_t hash_len);
+
+struct p2wsh_sat_ctx {
+    const struct wally_psbt       *psbt;
+    const struct wally_psbt_input *input;
+    size_t                         index;
+};
+
+static bool p2wsh_lookup_sig(const ms_satisfier *stfr,
+                             const unsigned char *pk, size_t pk_len,
+                             unsigned char *sig_out, size_t *sig_len_out)
 {
-    (void)input;
-    return false; /* TODO */
+    const struct p2wsh_sat_ctx *ctx = stfr->user_data;
+    size_t idx;
+    if (wally_map_find(&ctx->input->signatures, pk, pk_len, &idx) != WALLY_OK || !idx)
+        return false;
+    const struct wally_map_item *item = &ctx->input->signatures.items[idx - 1];
+    memcpy(sig_out, item->value, item->value_len);
+    *sig_len_out = item->value_len;
+    return true;
+}
+
+static bool p2wsh_lookup_pkh(const ms_satisfier *stfr,
+                             const unsigned char *hash20,
+                             unsigned char *pk_out, size_t *pk_len_out,
+                             unsigned char *sig_out, size_t *sig_len_out)
+{
+    const struct p2wsh_sat_ctx *ctx = stfr->user_data;
+    size_t i;
+    for (i = 0; i < ctx->input->keypaths.num_items; i++) {
+        const struct wally_map_item *kp = &ctx->input->keypaths.items[i];
+        unsigned char h[HASH160_LEN];
+        if (wally_hash160(kp->key, kp->key_len, h, sizeof(h)) != WALLY_OK)
+            continue;
+        if (memcmp(h, hash20, HASH160_LEN) != 0)
+            continue;
+        memcpy(pk_out, kp->key, kp->key_len);
+        *pk_len_out = kp->key_len;
+        *sig_len_out = 0;
+        size_t idx;
+        if (wally_map_find(&ctx->input->signatures, kp->key, kp->key_len, &idx) == WALLY_OK && idx) {
+            const struct wally_map_item *s = &ctx->input->signatures.items[idx - 1];
+            memcpy(sig_out, s->value, s->value_len);
+            *sig_len_out = s->value_len;
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool p2wsh_lookup_preimage(const ms_satisfier *stfr,
+                                  const unsigned char *hash, size_t hash_len,
+                                  uint32_t hash_type,
+                                  unsigned char preimage_out[32])
+{
+    const struct p2wsh_sat_ctx *ctx = stfr->user_data;
+    const struct wally_map_item *item =
+        find_preimage(ctx->input, (unsigned char)hash_type, hash, hash_len);
+    if (!item || item->value_len > 32)
+        return false;
+    memcpy(preimage_out, item->value, item->value_len);
+    return true;
+}
+
+static bool p2wsh_check_older(const ms_satisfier *stfr, uint32_t lock)
+{
+    const struct p2wsh_sat_ctx *ctx = stfr->user_data;
+    return is_input_csv_expired(ctx->psbt, ctx->input, ctx->index, lock);
+}
+
+static bool p2wsh_check_after(const ms_satisfier *stfr, uint32_t lock)
+{
+    const struct p2wsh_sat_ctx *ctx = stfr->user_data;
+    uint32_t locktime;
+    if (ctx->psbt->version == PSBT_0)
+        locktime = ctx->psbt->tx->locktime;
+    else
+        locktime = ctx->psbt->has_fallback_locktime ? ctx->psbt->fallback_locktime : 0u;
+    if ((locktime < 500000000u) != (lock < 500000000u))
+        return false;
+    return locktime >= lock;
+}
+
+static bool finalize_p2wsh(const struct wally_psbt *psbt,
+                           struct wally_psbt_input *input, size_t index)
+{
+    const struct wally_map_item *ws;
+    ms_node *node = NULL;
+    ms_satisfaction sat, dissat;
+    struct wally_tx_witness_stack *witness = NULL;
+    struct p2wsh_sat_ctx ctx = { psbt, input, index };
+    ms_satisfier stfr = {
+        p2wsh_lookup_sig,
+        p2wsh_lookup_pkh,
+        p2wsh_lookup_preimage,
+        p2wsh_check_older,
+        p2wsh_check_after,
+        NULL,
+        &ctx
+    };
+    bool ret = false;
+    size_t i;
+
+    ws = wally_map_get_integer(&input->psbt_fields, PSBT_IN_WITNESS_SCRIPT);
+    if (!ws)
+        return false;
+
+    if (decode_script_to_node(ws->value, ws->value_len, 0, &node) != WALLY_OK || !node)
+        return false;
+
+    memset(&sat, 0, sizeof(sat));
+    memset(&dissat, 0, sizeof(dissat));
+    satisfy_node(node, &stfr, false, &sat, &dissat);
+    ms_node_free(node);
+    node = NULL;
+
+    if (sat.witness.kind == MS_WITNESS_IMPOSSIBLE)
+        goto cleanup;
+
+    if (wally_tx_witness_stack_init_alloc(sat.witness.num_items + 1, &witness) != WALLY_OK)
+        goto cleanup;
+
+    for (i = 0; i < sat.witness.num_items; i++) {
+        if (wally_tx_witness_stack_add(witness,
+                                       sat.witness.items[i].data,
+                                       sat.witness.items[i].data_len) != WALLY_OK)
+            goto cleanup;
+    }
+
+    if (wally_tx_witness_stack_add(witness, ws->value, ws->value_len) != WALLY_OK)
+        goto cleanup;
+
+    wally_tx_witness_stack_free(input->final_witness);
+    input->final_witness = witness;
+    witness = NULL;
+    ret = true;
+
+    if (ret && wally_map_get_integer(&input->psbt_fields, PSBT_IN_REDEEM_SCRIPT))
+        ret = finalize_p2sh_wrapped(input);
+
+cleanup:
+    ms_satisfaction_free(&sat);
+    ms_satisfaction_free(&dissat);
+    wally_tx_witness_stack_free(witness);
+    return ret;
 }
 
 static bool finalize_multisig(struct wally_psbt_input *input,
@@ -5737,7 +5886,7 @@ int wally_psbt_finalize_input(struct wally_psbt *psbt, size_t index, uint32_t fl
             return WALLY_OK;
         break;
     case WALLY_SCRIPT_TYPE_P2WSH:
-        if (!finalize_p2wsh(input))
+        if (!finalize_p2wsh(psbt, input, index))
             return WALLY_OK;
         break;
     case WALLY_SCRIPT_TYPE_MULTISIG:
