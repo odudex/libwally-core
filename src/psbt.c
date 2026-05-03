@@ -5558,19 +5558,53 @@ fail:
     return ret;
 }
 
-static bool finalize_p2tr(struct wally_psbt_input *input)
+static const struct wally_map_item *
+find_tap_leaf_sig(const struct wally_psbt_input *input,
+                  const unsigned char *xonly_pubkey, /* 32 B */
+                  const unsigned char *leaf_hash)    /* 32 B */
 {
-    const struct wally_map_item *sig;
+    unsigned char key[EC_XONLY_PUBLIC_KEY_LEN + SHA256_LEN]; /* 64 B */
+    size_t idx;
+    memcpy(key, xonly_pubkey, EC_XONLY_PUBLIC_KEY_LEN);
+    memcpy(key + EC_XONLY_PUBLIC_KEY_LEN, leaf_hash, SHA256_LEN);
+    if (wally_map_find(&input->taproot_leaf_signatures, key, sizeof(key), &idx) != WALLY_OK || !idx)
+        return NULL;
+    /* wally_map_find returns 0 in idx if not found, otherwise (index + 1) */
+    return &input->taproot_leaf_signatures.items[idx - 1];
+}
 
-    sig = wally_map_get_integer(&input->psbt_fields, PSBT_IN_TAP_KEY_SIG);
+/* Find a hash preimage in the input's preimage map.
+ * The map key is [type_byte || hash_bytes]. */
+static const struct wally_map_item *find_preimage(
+    const struct wally_psbt_input *input,
+    unsigned char type,
+    const unsigned char *hash, size_t hash_len)
+{
+    unsigned char key[SHA256_LEN + 1];
+    size_t idx;
+    if (hash_len > SHA256_LEN)
+        return NULL;
+    key[0] = type;
+    memcpy(key + 1, hash, hash_len);
+    /* wally_map_find returns 0 in idx if not found, otherwise (index + 1) */
+    if (wally_map_find(&input->preimages, key, hash_len + 1, &idx) != WALLY_OK || !idx)
+        return NULL;
+    return &input->preimages.items[idx - 1];
+}
 
-    /* TODO support tapleaf spends input->taproot_leaf_signatures */
-    if (!sig ||
-        wally_witness_p2tr_from_sig(sig->value, sig->value_len,
-                                    &input->final_witness) != WALLY_OK)
-        return false;
-
-    return true;
+/* Append all items from src witness stack to dst. */
+static int witness_append_all(struct wally_tx_witness_stack *dst,
+                               const struct wally_tx_witness_stack *src)
+{
+    size_t i;
+    for (i = 0; i < src->num_items; i++) {
+        int ret = wally_tx_witness_stack_add(dst,
+                                             src->items[i].witness,
+                                             src->items[i].witness_len);
+        if (ret != WALLY_OK)
+            return ret;
+    }
+    return WALLY_OK;
 }
 
 static bool is_input_csv_expired(const struct wally_psbt *psbt,
