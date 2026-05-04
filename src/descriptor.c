@@ -4283,6 +4283,139 @@ int wally_descriptor_get_key_features(const struct wally_descriptor *descriptor,
     return WALLY_OK;
 }
 
+int wally_descriptor_get_musig_num_participants(
+    const struct wally_descriptor *descriptor,
+    size_t index, size_t *written)
+{
+    const ms_node *node = descriptor_get_key(descriptor, index);
+
+    if (written)
+        *written = 0;
+    if (!node || !written)
+        return WALLY_EINVAL;
+#ifndef BUILD_STANDARD_SECP
+    if (node->kind == KIND_DESCRIPTOR_MUSIG) {
+        const ms_node *k = node->child;
+        size_t count = 0;
+
+        while (k) { ++count; k = k->next; }
+        *written = count;
+        return WALLY_OK;
+    }
+#endif
+    return WALLY_EINVAL; /* Not a musig() key */
+}
+
+int wally_descriptor_get_musig_participant_key(
+    const struct wally_descriptor *descriptor,
+    size_t index, size_t participant_index,
+    char **output)
+{
+    const ms_node *node = descriptor_get_key(descriptor, index);
+
+    if (output)
+        *output = NULL;
+    if (!node || !output)
+        return WALLY_EINVAL;
+#ifndef BUILD_STANDARD_SECP
+    if (node->kind == KIND_DESCRIPTOR_MUSIG) {
+        const ms_node *k = node->child;
+        size_t i = 0;
+
+        while (k && i < participant_index) { k = k->next; ++i; }
+        if (!k)
+            return WALLY_EINVAL; /* participant_index out of range */
+        return format_key_node(descriptor, k, output);
+    }
+#endif
+    return WALLY_EINVAL; /* Not a musig() key */
+}
+
+int wally_descriptor_get_musig_participant_key_features(
+    const struct wally_descriptor *descriptor,
+    size_t index, size_t participant_index,
+    uint32_t *value_out)
+{
+    const ms_node *node = descriptor_get_key(descriptor, index);
+
+    if (value_out)
+        *value_out = 0;
+    if (!node || !value_out)
+        return WALLY_EINVAL;
+#ifndef BUILD_STANDARD_SECP
+    if (node->kind == KIND_DESCRIPTOR_MUSIG) {
+        const ms_node *k = node->child;
+        size_t i = 0;
+
+        while (k && i < participant_index) { k = k->next; ++i; }
+        if (!k)
+            return WALLY_EINVAL;
+        *value_out = k->flags;
+        return WALLY_OK;
+    }
+#endif
+    return WALLY_EINVAL;
+}
+
+int wally_descriptor_get_musig_participant_key_origin_fingerprint(
+    const struct wally_descriptor *descriptor,
+    size_t index, size_t participant_index,
+    unsigned char *bytes_out, size_t len)
+{
+    const ms_node *node = descriptor_get_key(descriptor, index);
+    const char *fingerprint;
+    size_t written, i = 0;
+    int ret;
+
+    if (!node || !bytes_out || len != BIP32_KEY_FINGERPRINT_LEN)
+        return WALLY_EINVAL;
+#ifndef BUILD_STANDARD_SECP
+    if (node->kind == KIND_DESCRIPTOR_MUSIG) {
+        const ms_node *k = node->child;
+
+        while (k && i < participant_index) { k = k->next; ++i; }
+        if (!k || !(k->flags & WALLY_MS_IS_PARENTED))
+            return WALLY_EINVAL;
+        fingerprint = descriptor->src + (((uint64_t)k->number) >> 32u) + 1;
+        ret = wally_hex_n_to_bytes(fingerprint, BIP32_KEY_FINGERPRINT_LEN * 2,
+                                   bytes_out, len, &written);
+        return ret == WALLY_OK && written != BIP32_KEY_FINGERPRINT_LEN ? WALLY_EINVAL : ret;
+    }
+#endif
+    return WALLY_EINVAL;
+}
+
+int wally_descriptor_get_musig_participant_key_origin_path_str(
+    const struct wally_descriptor *descriptor,
+    size_t index, size_t participant_index,
+    char **output)
+{
+    const ms_node *node = descriptor_get_key(descriptor, index);
+    const char *path;
+    size_t path_len, i = 0;
+
+    if (output)
+        *output = NULL;
+    if (!node || !output)
+        return WALLY_EINVAL;
+#ifndef BUILD_STANDARD_SECP
+    if (node->kind == KIND_DESCRIPTOR_MUSIG) {
+        const ms_node *k = node->child;
+
+        while (k && i < participant_index) { k = k->next; ++i; }
+        if (!k)
+            return WALLY_EINVAL;
+        path_len = k->flags & WALLY_MS_IS_PARENTED ? k->number & 0xffffffff : 0;
+        path_len = path_len < 11u ? 0 : path_len - 11u;
+        path = descriptor->src + (((uint64_t)k->number) >> 32u) + 10u;
+        if (!(*output = wally_strdup_n(path, path_len)))
+            return WALLY_ENOMEM;
+        return WALLY_OK;
+    }
+#endif
+    return WALLY_EINVAL;
+}
+
 int wally_descriptor_get_key_child_path_str_len(
     const struct wally_descriptor *descriptor, size_t index, size_t *written)
 {
