@@ -979,7 +979,7 @@ static int verify_or_b(ms_ctx *ctx, ms_node *node)
         ((x_prop & y_prop) & PROP_E))
         node->type_properties |= x_prop & y_prop & PROP_M;
 
-    return WALLY_OK;
+    return (node->type_properties & TYPE_B) ? WALLY_OK : WALLY_EINVAL;
 }
 
 static int verify_or_c(ms_ctx *ctx, ms_node *node)
@@ -998,7 +998,7 @@ static int verify_or_c(ms_ctx *ctx, ms_node *node)
     if (x_prop & PROP_E && ((x_prop | y_prop) & PROP_S))
         node->type_properties |= x_prop & y_prop & PROP_M;
 
-    return WALLY_OK;
+    return (node->type_properties & TYPE_V) ? WALLY_OK : WALLY_EINVAL;
 }
 
 static int verify_or_d(ms_ctx *ctx, ms_node *node)
