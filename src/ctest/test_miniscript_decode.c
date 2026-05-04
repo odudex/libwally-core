@@ -1814,6 +1814,283 @@ static bool test_satisfy_timelocks(void)
     return ok;
 }
 
+static bool test_satisfy_or_b(void)
+{
+    bool ok = true;
+    ms_node *node = NULL;
+    ms_satisfaction sat, dissat;
+    int ret;
+    unsigned char key[33];
+    memset(key, 0x02, 33);
+
+    /* Script: older(100) OP_SWAP <key> OP_BOOLOR  =  or_b(older(100), s:pk_k(key)) */
+    unsigned char script[2 + 1 + 1 + 1 + 33 + 1]; /* 39 bytes */
+    size_t off = 0;
+    script[off++] = 0x01; script[off++] = 0x64;
+    script[off++] = OP_CHECKSEQUENCEVERIFY;
+    script[off++] = OP_SWAP;
+    script[off++] = 0x21; memcpy(script + off, key, 33); off += 33;
+    script[off++] = OP_BOOLOR;
+
+    /* Case 1: timelock met */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 100, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.witness.num_items == 1);
+        CHECK(sat.witness.items[0].data_len == 0); /* dissat of s:pk_k: empty push */
+        CHECK(sat.relative_timelock == 100);
+        CHECK(sat.has_sig == false);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 2: timelock NOT met */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 0, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 3: NULL satisfier */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, NULL, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    return ok;
+}
+
+static bool test_satisfy_or_c(void)
+{
+    bool ok = true;
+    ms_node *node = NULL;
+    ms_satisfaction sat, dissat;
+    int ret;
+    unsigned char key[33];
+    memset(key, 0x03, 33);
+
+    /* Script: older(100) OP_NOTIF <key> OP_ENDIF  =  or_c(older(100), pk_k(key)) */
+    unsigned char script[2 + 1 + 1 + 1 + 33 + 1]; /* 39 bytes */
+    size_t off = 0;
+    script[off++] = 0x01; script[off++] = 0x64;
+    script[off++] = OP_CHECKSEQUENCEVERIFY;
+    script[off++] = OP_NOTIF;
+    script[off++] = 0x21; memcpy(script + off, key, 33); off += 33;
+    script[off++] = OP_ENDIF;
+
+    /* Case 1: timelock met */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 100, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.relative_timelock == 100);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 2: timelock NOT met */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 0, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 3: NULL satisfier */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, NULL, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    return ok;
+}
+
+static bool test_satisfy_or_d(void)
+{
+    bool ok = true;
+    ms_node *node = NULL;
+    ms_satisfaction sat, dissat;
+    int ret;
+    unsigned char key[33];
+    memset(key, 0x04, 33);
+
+    /* Script: older(100) OP_IFDUP OP_NOTIF <key> OP_ENDIF  =  or_d(older(100), pk_k(key)) */
+    unsigned char script[2 + 1 + 1 + 1 + 1 + 33 + 1]; /* 40 bytes */
+    size_t off = 0;
+    script[off++] = 0x01; script[off++] = 0x64;
+    script[off++] = OP_CHECKSEQUENCEVERIFY;
+    script[off++] = OP_IFDUP;
+    script[off++] = OP_NOTIF;
+    script[off++] = 0x21; memcpy(script + off, key, 33); off += 33;
+    script[off++] = OP_ENDIF;
+
+    /* Case 1: timelock met */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 100, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.relative_timelock == 100);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 2: timelock NOT met */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 0, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 3: NULL satisfier */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, NULL, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    return ok;
+}
+
+static bool test_satisfy_or_i(void)
+{
+    bool ok = true;
+    ms_node *node = NULL;
+    ms_satisfaction sat, dissat;
+    int ret;
+    unsigned char key[33];
+    memset(key, 0x05, 33);
+
+    /* Script: OP_IF older(100) OP_ELSE <key> OP_ENDIF  =  or_i(older(100), pk_k(key)) */
+    unsigned char script[1 + 2 + 1 + 1 + 1 + 33 + 1]; /* 40 bytes */
+    size_t off = 0;
+    script[off++] = OP_IF;
+    script[off++] = 0x01; script[off++] = 0x64;
+    script[off++] = OP_CHECKSEQUENCEVERIFY;
+    script[off++] = OP_ELSE;
+    script[off++] = 0x21; memcpy(script + off, key, 33); off += 33;
+    script[off++] = OP_ENDIF;
+
+    /* Case 1: timelock met */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 100, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.witness.num_items == 1);
+        CHECK(sat.witness.items[0].data_len == 1);
+        CHECK(sat.witness.items[0].data[0] == 0x01);
+        CHECK(sat.relative_timelock == 100);
+        CHECK(dissat.witness.kind == MS_WITNESS_STACK);
+        CHECK(dissat.witness.num_items == 2);
+        CHECK(dissat.witness.items[0].data_len == 0); /* pk_k dissat: empty push */
+        CHECK(dissat.witness.items[1].data_len == 0); /* right-branch selector: empty push */
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 2: timelock NOT met */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 0, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        CHECK(dissat.witness.kind == MS_WITNESS_STACK);
+        CHECK(dissat.witness.num_items == 2);
+        CHECK(dissat.witness.items[0].data_len == 0);
+        CHECK(dissat.witness.items[1].data_len == 0);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 3: NULL satisfier */
+    {
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, NULL, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        CHECK(dissat.witness.kind == MS_WITNESS_STACK);
+        CHECK(dissat.witness.num_items == 2);
+        CHECK(dissat.witness.items[0].data_len == 0);
+        CHECK(dissat.witness.items[1].data_len == 0);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    return ok;
+}
+
 int main(void)
 {
     bool ok = true;
@@ -1875,6 +2152,22 @@ int main(void)
     }
     if (!test_satisfy_timelocks()) {
         printf("[test_satisfy_timelocks] failed!\n");
+        ok = false;
+    }
+    if (!test_satisfy_or_b()) {
+        printf("[test_satisfy_or_b] failed!\n");
+        ok = false;
+    }
+    if (!test_satisfy_or_c()) {
+        printf("[test_satisfy_or_c] failed!\n");
+        ok = false;
+    }
+    if (!test_satisfy_or_d()) {
+        printf("[test_satisfy_or_d] failed!\n");
+        ok = false;
+    }
+    if (!test_satisfy_or_i()) {
+        printf("[test_satisfy_or_i] failed!\n");
         ok = false;
     }
     if (!test_satisfy_multi()) {
