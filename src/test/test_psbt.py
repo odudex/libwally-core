@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from util import *
@@ -440,6 +441,103 @@ class PSBTTests(unittest.TestCase):
         SERIALIZE_FLAG_REDUNDANT = 0x1
         serialized = self.to_base64(psbt, None, SERIALIZE_FLAG_REDUNDANT)
         self.assertNotEqual(serialized, b64)
+
+
+class Csv2of2SmokeTests(unittest.TestCase):
+    """Regression smoke: CSV2OF2_1 and CSV2OF2_1_OPT PSBT finalization witnesses."""
+
+    _SK_1 = bytes([1] + [0] * 31)  # user key
+    _SK_2 = bytes([2] + [0] * 31)  # recovery key
+    _CSV_BLOCKS = 17               # minimum
+
+    @classmethod
+    def setUpClass(cls):
+        pk_buf, pk_len = make_cbuffer('00' * 33)
+        assert wally_ec_public_key_from_private_key(cls._SK_1, 32, pk_buf, pk_len) == WALLY_OK
+        cls._PK_1 = bytes(pk_buf)
+        assert wally_ec_public_key_from_private_key(cls._SK_2, 32, pk_buf, pk_len) == WALLY_OK
+        cls._PK_2 = bytes(pk_buf)
+
+    def _build_psbt(self, is_optimized):
+        two_pks = self._PK_1 + self._PK_2
+        pks_buf, pks_len = make_cbuffer(two_pks.hex())
+
+        csv_buf, csv_len = make_cbuffer('00' * 200)
+        fn = (wally_scriptpubkey_csv_2of2_then_1_from_bytes_opt if is_optimized
+              else wally_scriptpubkey_csv_2of2_then_1_from_bytes)
+        ret, written = fn(pks_buf, pks_len, self._CSV_BLOCKS, 0, csv_buf, csv_len)
+        self.assertEqual(ret, WALLY_OK)
+        csv_script = bytes(csv_buf[:written])
+
+        p2wsh_spk = bytes([0x00, 0x20]) + hashlib.sha256(csv_script).digest()
+        spk_buf, spk_len = make_cbuffer(p2wsh_spk.hex())
+
+        output = pointer(wally_tx_output())
+        self.assertEqual(wally_tx_output_init_alloc(1_000_000, spk_buf, spk_len, output), WALLY_OK)
+
+        tx = pointer(wally_tx())
+        self.assertEqual(wally_tx_init_alloc(2, 0, 1, 1, tx), WALLY_OK)
+        txid_buf, txid_len = make_cbuffer('ab' * 32)
+        # sequence=0 ensures CSV is not expired (0 < CSV_BLOCKS=17)
+        self.assertEqual(wally_tx_add_raw_input(tx, txid_buf, txid_len, 0, 0, None, 0, None, 0), WALLY_OK)
+        self.assertEqual(wally_tx_add_output(tx, output), WALLY_OK)
+
+        psbt = pointer(wally_psbt())
+        self.assertEqual(wally_psbt_init_alloc(0, 0, 0, 0, 0, psbt), WALLY_OK)
+        self.assertEqual(wally_psbt_set_global_tx(psbt, tx), WALLY_OK)
+        self.assertEqual(wally_psbt_set_input_witness_utxo(psbt, 0, output), WALLY_OK)
+
+        csv_cbuf, csv_cbuf_len = make_cbuffer(csv_script.hex())
+        self.assertEqual(wally_psbt_set_input_witness_script(psbt, 0, csv_cbuf, csv_cbuf_len), WALLY_OK)
+
+        fp, fp_len = make_cbuffer('00' * 4)
+        for pk in [self._PK_1, self._PK_2]:
+            pk_cbuf, pk_cbuf_len = make_cbuffer(pk.hex())
+            self.assertEqual(wally_psbt_add_input_keypath(psbt, 0, pk_cbuf, pk_cbuf_len,
+                                                          fp, fp_len, None, 0), WALLY_OK)
+        return psbt, csv_script
+
+    def _sign_and_get_witness(self, psbt):
+        for sk in [self._SK_1, self._SK_2]:
+            sk_buf, sk_len = make_cbuffer(sk.hex())
+            wally_psbt_sign(psbt, sk_buf, sk_len, FLAG_GRIND_R)
+
+        self.assertEqual(wally_psbt_finalize(psbt, 0), WALLY_OK)
+        ret, is_finalized = wally_psbt_is_finalized(psbt)
+        self.assertEqual((ret, is_finalized), (WALLY_OK, 1))
+
+        fw = psbt.contents.inputs[0].final_witness
+        self.assertIsNotNone(fw)
+        stack = fw.contents
+        items = []
+        for i in range(stack.num_items):
+            item = stack.items[i]
+            if item.len == 0 or not item.witness:
+                items.append(b'')
+            else:
+                items.append(string_at(item.witness, item.len))
+        return items
+
+    def test_csv2of2_1_two_key_spend(self):
+        """CSV2OF2_1: two-key spend produces [sig_2, sig_1, csv_script]."""
+        psbt, csv_script = self._build_psbt(is_optimized=False)
+        witness = self._sign_and_get_witness(psbt)
+        wally_psbt_free(psbt)
+        self.assertEqual(len(witness), 3)
+        self.assertGreater(len(witness[0]), 0)  # sig_2
+        self.assertGreater(len(witness[1]), 0)  # sig_1
+        self.assertEqual(witness[2], csv_script)
+
+    def test_csv2of2_1_opt_two_key_spend(self):
+        """CSV2OF2_1_OPT: two-key spend produces [sig_2, sig_1, csv_script]."""
+        psbt, csv_script = self._build_psbt(is_optimized=True)
+        witness = self._sign_and_get_witness(psbt)
+        wally_psbt_free(psbt)
+        self.assertEqual(len(witness), 3)
+        self.assertGreater(len(witness[0]), 0)  # sig_2
+        self.assertGreater(len(witness[1]), 0)  # sig_1
+        self.assertEqual(witness[2], csv_script)
+
 
 if __name__ == '__main__':
     unittest.main()

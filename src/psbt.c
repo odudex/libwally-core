@@ -6037,61 +6037,58 @@ static bool is_input_csv_expired(const struct wally_psbt *psbt,
 static bool finalize_csv2of2_1(const struct wally_psbt *psbt,
                                struct wally_psbt_input *input, size_t index,
                                const unsigned char *out_script, size_t out_script_len,
-                               bool is_witness, bool is_p2sh)
+                               bool is_witness, bool is_p2sh, bool is_optimized)
 {
-    ms_node *node = NULL;
-    ms_satisfaction sat, dissat;
-    struct wally_tx_witness_stack *witness = NULL;
-    struct p2wsh_sat_ctx ctx = { psbt, input, index };
-    ms_satisfier stfr = {
-        p2wsh_lookup_sig,
-        p2wsh_lookup_pkh,
-        p2wsh_lookup_preimage,
-        p2wsh_check_older,
-        p2wsh_check_after,
-        NULL,
-        &ctx
-    };
-    bool ret = false;
-    size_t i;
+    const struct wally_map_item *sig_1, *sig_2, empty = { 0 };
+    const unsigned char *pk_1, *pk_2;
+    const uint32_t tx_version = psbt->tx ? psbt->tx->version : psbt->tx_version;
+    uint32_t blocks;
+    bool is_expired, is_expired_unoptimized;
 
     if (!is_witness)
+        return false; /* Only supported for segwit inputs */
+
+    if (wally_scriptpubkey_csv_blocks_from_csv_2of2_then_1(out_script, out_script_len,
+                                                           &blocks) != WALLY_OK)
         return false;
 
-    if (decode_script_to_node(out_script, out_script_len, 0, &node) != WALLY_OK || !node)
-        return false;
+    is_expired = tx_version >= 2 && is_input_csv_expired(psbt, input, index, blocks);
+    is_expired_unoptimized = is_expired && !is_optimized;
 
-    memset(&sat, 0, sizeof(sat));
-    memset(&dissat, 0, sizeof(dissat));
-    satisfy_node(node, &stfr, true, &sat, &dissat);
-    ms_node_free(node);
-    node = NULL;
-
-    if (sat.witness.kind != MS_WITNESS_STACK)
-        goto cleanup;
-
-    if (wally_tx_witness_stack_init_alloc(sat.witness.num_items + 1, &witness) != WALLY_OK)
-        goto cleanup;
-    for (i = 0; i < sat.witness.num_items; i++) {
-        if (wally_tx_witness_stack_add(witness,
-                                       sat.witness.items[i].data,
-                                       sat.witness.items[i].data_len) != WALLY_OK)
-            goto cleanup;
+    if (is_optimized) {
+        pk_1 = out_script + 1;
+        pk_2 = out_script + 1 + EC_PUBLIC_KEY_LEN + 1 + 1;
+    } else {
+        pk_1 = out_script + 4;
+        pk_2 = out_script + out_script_len - 1 - EC_PUBLIC_KEY_LEN;
     }
-    if (wally_tx_witness_stack_add(witness, out_script, out_script_len) != WALLY_OK)
-        goto cleanup;
-    wally_tx_witness_stack_free(input->final_witness);
-    input->final_witness = witness;
-    witness = NULL;
-    ret = true;
-    if (is_p2sh)
-        ret = finalize_p2sh_wrapped(input);
 
-cleanup:
-    ms_satisfaction_free(&sat);
-    ms_satisfaction_free(&dissat);
-    wally_tx_witness_stack_free(witness);
-    return ret;
+    sig_1 = wally_map_get(&input->signatures, pk_1, EC_PUBLIC_KEY_LEN);
+    sig_2 = wally_map_get(&input->signatures, pk_2, EC_PUBLIC_KEY_LEN);
+    if (is_expired) {
+        if (is_optimized) {
+            sig_2 = &empty; /* Spend with an empty witness element */
+        } else {
+            sig_1 = &empty; /* Not used except to pass the if check below */
+        }
+    }
+
+    if (!sig_1 || !sig_2)
+        return false; /* Missing required signature(s) */
+
+    if (wally_tx_witness_stack_init_alloc(3, &input->final_witness) != WALLY_OK)
+        return false;
+
+    if (wally_tx_witness_stack_add(input->final_witness, sig_2->value, sig_2->value_len) == WALLY_OK &&
+        (is_expired_unoptimized ||
+          wally_tx_witness_stack_add(input->final_witness, sig_1->value, sig_1->value_len) == WALLY_OK) &&
+        wally_tx_witness_stack_add(input->final_witness, out_script, out_script_len) == WALLY_OK) {
+        if (!is_p2sh || finalize_p2sh_wrapped(input))
+            return true;
+    }
+    wally_tx_witness_stack_free(input->final_witness);
+    input->final_witness = NULL;
+    return false;
 }
 
 int wally_psbt_finalize_input(struct wally_psbt *psbt, size_t index, uint32_t flags)
@@ -6174,7 +6171,8 @@ int wally_psbt_finalize_input(struct wally_psbt *psbt, size_t index, uint32_t fl
     case WALLY_SCRIPT_TYPE_CSV2OF2_1:
     case WALLY_SCRIPT_TYPE_CSV2OF2_1_OPT:
         if (!finalize_csv2of2_1(psbt, input, index, out_script, out_script_len,
-                                is_witness, is_p2sh))
+                                is_witness, is_p2sh,
+                                type == WALLY_SCRIPT_TYPE_CSV2OF2_1_OPT))
             return WALLY_OK;
         break;
     default:
