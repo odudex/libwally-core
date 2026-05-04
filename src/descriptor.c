@@ -4173,6 +4173,41 @@ static const ms_node *descriptor_get_key(const struct wally_descriptor *descript
     return (ms_node *)descriptor->keys.items[index].value;
 }
 
+static int format_key_node(const struct wally_descriptor *descriptor,
+                           const ms_node *node, char **output)
+{
+    if (node->kind == KIND_PUBLIC_KEY)
+        return wally_hex_from_bytes((const unsigned char *)node->data,
+                                    node->data_len, output);
+    if (node->kind == KIND_PRIVATE_KEY) {
+        uint32_t flags = node->flags & WALLY_MS_IS_UNCOMPRESSED ? WALLY_WIF_FLAG_UNCOMPRESSED : 0;
+        if (!descriptor->addr_ver)
+            return WALLY_EINVAL;
+        return wally_wif_from_bytes((const unsigned char *)node->data, node->data_len,
+                                    descriptor->addr_ver->version_wif,
+                                    flags, output);
+    }
+    if ((node->kind & KIND_BIP32) == KIND_BIP32) {
+        if (node->child_path_len) {
+            /* Include the derivation path: <key>/<child_path> */
+            size_t total = node->data_len + 1 + node->child_path_len;
+            char *buf = (char *)wally_malloc(total + 1);
+            if (!buf)
+                return WALLY_ENOMEM;
+            memcpy(buf, node->data, node->data_len);
+            buf[node->data_len] = '/';
+            memcpy(buf + node->data_len + 1, node->child_path, node->child_path_len);
+            buf[total] = '\0';
+            *output = buf;
+        } else {
+            if (!(*output = wally_strdup_n(node->data, node->data_len)))
+                return WALLY_ENOMEM;
+        }
+        return WALLY_OK;
+    }
+    return WALLY_ERROR; /* Unknown key type */
+}
+
 int wally_descriptor_get_key(const struct wally_descriptor *descriptor,
                              size_t index, char **output)
 {
