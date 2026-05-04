@@ -93,6 +93,27 @@ class DescriptorTests(unittest.TestCase):
             self.assertEqual(script[:written], make_cbuffer(expected)[0])
             wally_descriptor_free(d)
 
+        # hash fragment tests: (miniscript, flags, expected_hex)
+        hash_args = [
+            ('sha256(9267d3dbed802941483f1afa2a6bc68de5f653128aca9bf1461c5d0a3ad36ed2)', MS_ONLY,
+             '82012088a8209267d3dbed802941483f1afa2a6bc68de5f653128aca9bf1461c5d0a3ad36ed287'),
+            ('hash256(131772552c01444cd81360818376a040b7c3b2b7b0a53550ee3edde216cec61b)', MS_ONLY,
+             '82012088aa20131772552c01444cd81360818376a040b7c3b2b7b0a53550ee3edde216cec61b87'),
+            ('ripemd160(6ad07d21fd5dfc646f0b30577045ce201616b9ba)', MS_ONLY,
+             '82012088a6146ad07d21fd5dfc646f0b30577045ce201616b9ba87'),
+            ('hash160(20195b5a3d650c17f0f29f91c33f8f6335193d07)', MS_ONLY,
+             '82012088a91420195b5a3d650c17f0f29f91c33f8f6335193d0787'),
+        ]
+        for hash_ms, flags, expected in hash_args:
+            d = c_void_p()
+            ret = wally_descriptor_parse(hash_ms, keys, NETWORK_NONE, flags, d)
+            self.assertEqual(ret, WALLY_OK)
+            ret, written = wally_descriptor_to_script(d, 0, 0, 0, 0, 0, 0, script, script_len)
+            self.assertEqual(ret, WALLY_OK)
+            self.assertEqual(written, len(expected) // 2)
+            self.assertEqual(script[:written], make_cbuffer(expected)[0])
+            wally_descriptor_free(d)
+
         wally_map_free(keys)
 
         # Invalid args

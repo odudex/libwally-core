@@ -522,6 +522,132 @@ static bool test_decode_pk(void)
     return ok;
 }
 
+static bool test_decode_hash(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+
+    /* sha256: OP_SIZE 0x0120 OP_EQUALVERIFY OP_SHA256 0x20 <32 bytes> OP_EQUAL */
+    {
+        unsigned char hash32[32];
+        unsigned char script[39];
+        memset(hash32, 0xaa, 32);
+        script[0] = 0x82; /* OP_SIZE */
+        script[1] = 0x01; script[2] = 0x20; /* push 1 byte = 32 */
+        script[3] = 0x88; /* OP_EQUALVERIFY */
+        script[4] = 0xa8; /* OP_SHA256 */
+        script[5] = 0x20; /* push 32 bytes */
+        memcpy(script + 6, hash32, 32);
+        script[38] = 0x87; /* OP_EQUAL */
+        ret = decode_script_to_node(script, 39, 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_SHA256);
+        CHECK(output->data_len == 32);
+        CHECK(memcmp(output->data, hash32, 32) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* hash256: same shape, opcode byte 0xaa at offset 4 */
+    {
+        unsigned char hash32[32];
+        unsigned char script[39];
+        memset(hash32, 0xaa, 32);
+        script[0] = 0x82;
+        script[1] = 0x01; script[2] = 0x20;
+        script[3] = 0x88;
+        script[4] = 0xaa; /* OP_HASH256 */
+        script[5] = 0x20;
+        memcpy(script + 6, hash32, 32);
+        script[38] = 0x87;
+        ret = decode_script_to_node(script, 39, 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_HASH256);
+        CHECK(output->data_len == 32);
+        CHECK(memcmp(output->data, hash32, 32) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* ripemd160: OP_SIZE 0x0120 OP_EQUALVERIFY OP_RIPEMD160 0x14 <20 bytes> OP_EQUAL */
+    {
+        unsigned char hash20[20];
+        unsigned char script[27];
+        memset(hash20, 0xbb, 20);
+        script[0] = 0x82;
+        script[1] = 0x01; script[2] = 0x20;
+        script[3] = 0x88;
+        script[4] = 0xa6; /* OP_RIPEMD160 */
+        script[5] = 0x14; /* push 20 bytes */
+        memcpy(script + 6, hash20, 20);
+        script[26] = 0x87;
+        ret = decode_script_to_node(script, 27, 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_RIPEMD160);
+        CHECK(output->data_len == 20);
+        CHECK(memcmp(output->data, hash20, 20) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* hash160: same shape, opcode byte 0xa9 at offset 4 */
+    {
+        unsigned char hash20[20];
+        unsigned char script[27];
+        memset(hash20, 0xbb, 20);
+        script[0] = 0x82;
+        script[1] = 0x01; script[2] = 0x20;
+        script[3] = 0x88;
+        script[4] = 0xa9; /* OP_HASH160 */
+        script[5] = 0x14;
+        memcpy(script + 6, hash20, 20);
+        script[26] = 0x87;
+        ret = decode_script_to_node(script, 27, 0, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_HASH160);
+        CHECK(output->data_len == 20);
+        CHECK(memcmp(output->data, hash20, 20) == 0);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* Error: truncated sha256 (missing OP_EQUAL at end) */
+    {
+        unsigned char hash32[32];
+        unsigned char script[38];
+        memset(hash32, 0xaa, 32);
+        script[0] = 0x82;
+        script[1] = 0x01; script[2] = 0x20;
+        script[3] = 0x88;
+        script[4] = 0xa8;
+        script[5] = 0x20;
+        memcpy(script + 6, hash32, 32);
+        /* deliberately omit the trailing 0x87 */
+        ret = decode_script_to_node(script, 38, 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Error: wrong hash length (31-byte push instead of 32) */
+    {
+        unsigned char script[39];
+        script[0] = 0x82;
+        script[1] = 0x01; script[2] = 0x20;
+        script[3] = 0x88;
+        script[4] = 0xa8; /* OP_SHA256 */
+        script[5] = 0x1f; /* push 31 bytes (invalid) */
+        memset(script + 6, 0xaa, 31);
+        script[37] = 0x87;
+        script[38] = 0x00; /* padding to keep length same */
+        ret = decode_script_to_node(script, 38, 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    return ok;
+}
+
 static bool test_decode_multi(void)
 {
     bool ok = true;
@@ -1230,6 +1356,10 @@ int main(void)
     }
     if (!test_decode_pk()) {
         printf("[test_decode_pk] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_hash()) {
+        printf("[test_decode_hash] failed!\n");
         ok = false;
     }
     if (!test_decode_multi()) {

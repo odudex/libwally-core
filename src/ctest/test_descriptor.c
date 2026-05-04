@@ -1023,6 +1023,30 @@ static const struct descriptor_test {
         WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
         "76a914d0721279e70d39fb4aa409b52839a0056454e3b588ac",
         ""
+    }, {
+        "miniscript - sha256 segwit v0",
+        "sha256(9267d3dbed802941483f1afa2a6bc68de5f653128aca9bf1461c5d0a3ad36ed2)",
+        WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
+        "82012088a8209267d3dbed802941483f1afa2a6bc68de5f653128aca9bf1461c5d0a3ad36ed287",
+        ""
+    }, {
+        "miniscript - hash256 segwit v0",
+        "hash256(131772552c01444cd81360818376a040b7c3b2b7b0a53550ee3edde216cec61b)",
+        WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
+        "82012088aa20131772552c01444cd81360818376a040b7c3b2b7b0a53550ee3edde216cec61b87",
+        ""
+    }, {
+        "miniscript - ripemd160 segwit v0",
+        "ripemd160(6ad07d21fd5dfc646f0b30577045ce201616b9ba)",
+        WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
+        "82012088a6146ad07d21fd5dfc646f0b30577045ce201616b9ba87",
+        ""
+    }, {
+        "miniscript - hash160 segwit v0",
+        "hash160(20195b5a3d650c17f0f29f91c33f8f6335193d07)",
+        WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
+        "82012088a91420195b5a3d650c17f0f29f91c33f8f6335193d0787",
+        ""
     },
     /*
      * Miniscript taproot cases
