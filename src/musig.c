@@ -295,4 +295,164 @@ WALLY_CORE_API int wally_musig_partial_sig_free(
     return WALLY_OK;
 }
 
+/* --- Key aggregation functions --- */
+
+WALLY_CORE_API int wally_musig_pubkey_agg(
+    const unsigned char *pub_keys,
+    size_t pub_keys_len,
+    unsigned char *agg_pk_out,
+    size_t agg_pk_out_len,
+    struct wally_musig_keyagg_cache **cache_out)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_pubkey *pubkeys_parsed = NULL;
+    const secp256k1_pubkey **pubkey_ptrs = NULL;
+    secp256k1_musig_keyagg_cache *cache = NULL;
+    secp256k1_xonly_pubkey xonly;
+    size_t n_pubkeys, i;
+    int ret = WALLY_EINVAL;
+
+    if (!pub_keys || !pub_keys_len || pub_keys_len % EC_PUBLIC_KEY_LEN != 0)
+        return WALLY_EINVAL;
+    if (agg_pk_out && agg_pk_out_len != EC_XONLY_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+    if (!agg_pk_out && !cache_out)
+        return WALLY_EINVAL;
+    if (cache_out)
+        *cache_out = NULL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    n_pubkeys = pub_keys_len / EC_PUBLIC_KEY_LEN;
+    if (n_pubkeys < 2)
+        return WALLY_EINVAL;
+
+    pubkeys_parsed = wally_calloc(n_pubkeys * sizeof(secp256k1_pubkey));
+    if (!pubkeys_parsed)
+        return WALLY_ENOMEM;
+
+    pubkey_ptrs = wally_calloc(n_pubkeys * sizeof(secp256k1_pubkey *));
+    if (!pubkey_ptrs) {
+        wally_free(pubkeys_parsed);
+        return WALLY_ENOMEM;
+    }
+
+    for (i = 0; i < n_pubkeys; i++) {
+        if (!pubkey_parse(&pubkeys_parsed[i],
+                          pub_keys + i * EC_PUBLIC_KEY_LEN,
+                          EC_PUBLIC_KEY_LEN))
+            goto cleanup;
+        pubkey_ptrs[i] = &pubkeys_parsed[i];
+    }
+
+    if (cache_out) {
+        cache = wally_calloc(sizeof(secp256k1_musig_keyagg_cache));
+        if (!cache) {
+            ret = WALLY_ENOMEM;
+            goto cleanup;
+        }
+    }
+
+    if (!secp256k1_musig_pubkey_agg(ctx, NULL,
+                                    agg_pk_out ? &xonly : NULL,
+                                    cache, pubkey_ptrs, n_pubkeys))
+        goto cleanup;
+
+    if (agg_pk_out)
+        xpubkey_serialize(agg_pk_out, &xonly);
+
+    if (cache_out) {
+        *cache_out = (struct wally_musig_keyagg_cache *)cache;
+        cache = NULL;
+    }
+    ret = WALLY_OK;
+
+cleanup:
+    if (cache)
+        wally_free(cache);
+    wally_free(pubkey_ptrs);
+    wally_free(pubkeys_parsed);
+    return ret;
+}
+
+WALLY_CORE_API int wally_musig_pubkey_get(
+    const struct wally_musig_keyagg_cache *cache,
+    unsigned char *pub_key_out,
+    size_t pub_key_out_len)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_pubkey agg_pk;
+    size_t len = EC_PUBLIC_KEY_LEN;
+
+    if (!cache || !pub_key_out || pub_key_out_len != EC_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    if (!secp256k1_musig_pubkey_get(ctx, &agg_pk,
+                                    (const secp256k1_musig_keyagg_cache *)cache))
+        return WALLY_ERROR;
+
+    pubkey_serialize(pub_key_out, &len, &agg_pk, PUBKEY_COMPRESSED);
+    return WALLY_OK;
+}
+
+WALLY_CORE_API int wally_musig_pubkey_ec_tweak_add(
+    struct wally_musig_keyagg_cache *cache,
+    const unsigned char *tweak,
+    size_t tweak_len,
+    unsigned char *pub_key_out,
+    size_t pub_key_out_len)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_pubkey output_pk;
+    size_t len = EC_PUBLIC_KEY_LEN;
+
+    if (!cache || !tweak || tweak_len != 32)
+        return WALLY_EINVAL;
+    if (pub_key_out && pub_key_out_len != EC_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    if (!secp256k1_musig_pubkey_ec_tweak_add(ctx,
+                                             pub_key_out ? &output_pk : NULL,
+                                             (secp256k1_musig_keyagg_cache *)cache,
+                                             tweak))
+        return WALLY_ERROR;
+
+    if (pub_key_out)
+        pubkey_serialize(pub_key_out, &len, &output_pk, PUBKEY_COMPRESSED);
+    return WALLY_OK;
+}
+
+WALLY_CORE_API int wally_musig_pubkey_xonly_tweak_add(
+    struct wally_musig_keyagg_cache *cache,
+    const unsigned char *tweak,
+    size_t tweak_len,
+    unsigned char *pub_key_out,
+    size_t pub_key_out_len)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_pubkey output_pk;
+    size_t len = EC_PUBLIC_KEY_LEN;
+
+    if (!cache || !tweak || tweak_len != 32)
+        return WALLY_EINVAL;
+    if (pub_key_out && pub_key_out_len != EC_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    if (!secp256k1_musig_pubkey_xonly_tweak_add(ctx,
+                                                pub_key_out ? &output_pk : NULL,
+                                                (secp256k1_musig_keyagg_cache *)cache,
+                                                tweak))
+        return WALLY_ERROR;
+
+    if (pub_key_out)
+        pubkey_serialize(pub_key_out, &len, &output_pk, PUBKEY_COMPRESSED);
+    return WALLY_OK;
+}
+
 #endif /* ndef BUILD_STANDARD_SECP */

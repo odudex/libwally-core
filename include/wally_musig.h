@@ -222,6 +222,68 @@ WALLY_CORE_API int wally_musig_partial_sig_serialize(
 WALLY_CORE_API int wally_musig_partial_sig_free(
     struct wally_musig_partial_sig *sig);
 
+/* --- Key aggregation functions --- */
+
+/**
+ * Compute the MuSig2 aggregate public key from N individual public keys.
+ *
+ * :param pub_keys: Concatenated array of compressed public keys (each EC_PUBLIC_KEY_LEN bytes).
+ * :param pub_keys_len: Length of pub_keys. Must be a non-zero multiple of EC_PUBLIC_KEY_LEN.
+ * :param agg_pk_out: 32-byte buffer to receive the x-only aggregate public key. May be NULL.
+ * FIXED_SIZED_OUTPUT(agg_pk_out_len, agg_pk_out, EC_XONLY_PUBLIC_KEY_LEN)
+ * :param cache_out: Destination for the allocated keyagg_cache (required for signing). May be NULL.
+ */
+WALLY_CORE_API int wally_musig_pubkey_agg(
+    const unsigned char *pub_keys,
+    size_t pub_keys_len,
+    unsigned char *agg_pk_out,
+    size_t agg_pk_out_len,
+    struct wally_musig_keyagg_cache **cache_out);
+
+/**
+ * Extract the non-xonly (compressed) aggregate public key from a keyagg_cache.
+ *
+ * :param cache: The keyagg_cache produced by wally_musig_pubkey_agg.
+ * :param pub_key_out: 33-byte buffer to receive the compressed aggregate public key.
+ * FIXED_SIZED_OUTPUT(pub_key_out_len, pub_key_out, EC_PUBLIC_KEY_LEN)
+ */
+WALLY_CORE_API int wally_musig_pubkey_get(
+    const struct wally_musig_keyagg_cache *cache,
+    unsigned char *pub_key_out,
+    size_t pub_key_out_len);
+
+/**
+ * Apply BIP-32 plain EC tweaking to an aggregate key via the keyagg_cache.
+ *
+ * :param cache: The keyagg_cache to tweak (modified in place).
+ * :param tweak: 32-byte tweak value.
+ * :param tweak_len: Length of tweak. Must be 32.
+ * :param pub_key_out: 33-byte buffer for the tweaked compressed public key. May be NULL.
+ * FIXED_SIZED_OUTPUT(pub_key_out_len, pub_key_out, EC_PUBLIC_KEY_LEN)
+ */
+WALLY_CORE_API int wally_musig_pubkey_ec_tweak_add(
+    struct wally_musig_keyagg_cache *cache,
+    const unsigned char *tweak,
+    size_t tweak_len,
+    unsigned char *pub_key_out,
+    size_t pub_key_out_len);
+
+/**
+ * Apply BIP-341 x-only tweaking to an aggregate key via the keyagg_cache.
+ *
+ * :param cache: The keyagg_cache to tweak (modified in place).
+ * :param tweak: 32-byte tweak value.
+ * :param tweak_len: Length of tweak. Must be 32.
+ * :param pub_key_out: 33-byte buffer for the tweaked compressed public key. May be NULL.
+ * FIXED_SIZED_OUTPUT(pub_key_out_len, pub_key_out, EC_PUBLIC_KEY_LEN)
+ */
+WALLY_CORE_API int wally_musig_pubkey_xonly_tweak_add(
+    struct wally_musig_keyagg_cache *cache,
+    const unsigned char *tweak,
+    size_t tweak_len,
+    unsigned char *pub_key_out,
+    size_t pub_key_out_len);
+
 #endif /* ndef BUILD_STANDARD_SECP */
 
 #ifdef __cplusplus
