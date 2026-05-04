@@ -2396,6 +2396,215 @@ static bool test_satisfy_thresh(void)
     return ok;
 }
 
+static bool test_decode_negative(void)
+{
+    bool ok = true;
+    ms_node *output = NULL;
+    int ret;
+
+    /* Tokenizer-level: OP_1NEGATE alone */
+    {
+        unsigned char script[] = { OP_1NEGATE };
+        ret = decode_script_to_node(script, 1, 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Tokenizer-level: truncated push (0x21 claims 33 bytes but script ends) */
+    {
+        unsigned char script[] = { 0x21 };
+        ret = decode_script_to_node(script, 1, 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Tokenizer-level: OP_RESERVED (0x50) — unknown opcode */
+    {
+        unsigned char script[] = { OP_RESERVED };
+        ret = decode_script_to_node(script, 1, 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Decoder-level: single OP_CHECKSIG — no preceding expression to wrap */
+    {
+        unsigned char script[] = { OP_CHECKSIG };
+        ret = decode_script_to_node(script, 1, 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Decoder-level: empty script — NT_EXPRESSION gets NULL from tk_cursor_peek */
+    {
+        ret = decode_script_to_node(NULL, 0, 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Decoder-level: pk_k then stray OP_CHECKSIG — is_and_v triggers NT_EXPRESSION
+     * which finds no further expression after consuming TK_CHECK_SIG */
+    {
+        unsigned char script[35];
+        script[0] = OP_CHECKSIG;
+        script[1] = 0x21;
+        memset(script + 2, 0x02, 33);
+        ret = decode_script_to_node(script, 35, 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Semantic: multi(0, pk1) — k=0 rejected */
+    {
+        unsigned char pk1[33];
+        unsigned char script[1 + 34 + 1 + 1];
+        size_t off = 0;
+        memset(pk1, 0x02, 33);
+        script[off++] = OP_0;
+        script[off++] = 0x21; memcpy(script + off, pk1, 33); off += 33;
+        script[off++] = OP_1;
+        script[off++] = OP_CHECKMULTISIG;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Semantic: multi(3, pk1, pk2) — k > n rejected */
+    {
+        unsigned char pk1[33], pk2[33];
+        unsigned char script[1 + 34 + 34 + 1 + 1];
+        size_t off = 0;
+        memset(pk1, 0x02, 33);
+        memset(pk2, 0x03, 33);
+        script[off++] = OP_3;
+        script[off++] = 0x21; memcpy(script + off, pk1, 33); off += 33;
+        script[off++] = 0x21; memcpy(script + off, pk2, 33); off += 33;
+        script[off++] = OP_2;
+        script[off++] = OP_CHECKMULTISIG;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Semantic: thresh(0, pk_k(A)) — k=0 rejected */
+    {
+        unsigned char keyA[33];
+        unsigned char script[34 + 1 + 1];
+        size_t off = 0;
+        memset(keyA, 0x02, 33);
+        script[off++] = 0x21; memcpy(script + off, keyA, 33); off += 33;
+        script[off++] = OP_0;
+        script[off++] = OP_EQUAL;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Semantic: thresh(3, pk_k(A), s:pk_k(B)) — k=3 > n=2 rejected */
+    {
+        unsigned char keyA[33], keyB[33];
+        unsigned char script[34 + 1 + 34 + 1 + 1 + 1];
+        size_t off = 0;
+        memset(keyA, 0x02, 33);
+        memset(keyB, 0x03, 33);
+        script[off++] = 0x21; memcpy(script + off, keyA, 33); off += 33;
+        script[off++] = OP_SWAP;
+        script[off++] = 0x21; memcpy(script + off, keyB, 33); off += 33;
+        script[off++] = OP_ADD;
+        script[off++] = OP_3;
+        script[off++] = OP_EQUAL;
+        ret = decode_script_to_node(script, sizeof(script), 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    return ok;
+}
+
+static bool test_satisfy_negative(void)
+{
+    bool ok = true;
+    ms_node *node = NULL;
+    ms_satisfaction sat, dissat;
+    int ret;
+
+    /* pk_k, no sig — lookup_sig always returns false */
+    {
+        unsigned char script[34];
+        script[0] = 0x21;
+        memset(script + 1, 0x02, 33);
+        ret = decode_script_to_node(script, 34, 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        sig_ctx_t ctx = { NULL, 0 };
+        ms_satisfier stfr = { multi_lookup_sig, NULL, NULL, NULL, NULL, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* pk_h, no sig or key — lookup_pkh is NULL */
+    {
+        unsigned char script[24];
+        unsigned char hash20[20];
+        memset(hash20, 0x77, 20);
+        script[0] = OP_DUP;
+        script[1] = OP_HASH160;
+        script[2] = 0x14;
+        memcpy(script + 3, hash20, 20);
+        script[23] = OP_EQUALVERIFY;
+        ret = decode_script_to_node(script, 24, 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, NULL, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* sha256, no preimage — lookup_preimage is NULL */
+    {
+        unsigned char hash32[32];
+        unsigned char script[39];
+        memset(hash32, 0xaa, 32);
+        script[0] = 0x82; /* OP_SIZE */
+        script[1] = 0x01; script[2] = 0x20; /* push 1 byte: 32 */
+        script[3] = 0x88; /* OP_EQUALVERIFY */
+        script[4] = 0xa8; /* OP_SHA256 */
+        script[5] = 0x20; /* push 32 bytes */
+        memcpy(script + 6, hash32, 32);
+        script[38] = 0x87; /* OP_EQUAL */
+        ret = decode_script_to_node(script, 39, 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        ms_satisfier stfr = { NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* older(100), timelock not met — check_older returns false */
+    {
+        unsigned char script[] = { 0x01, 0x64, OP_CHECKSEQUENCEVERIFY };
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 0, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    return ok;
+}
+
 int main(void)
 {
     bool ok = true;
@@ -2489,6 +2698,14 @@ int main(void)
     }
     if (!test_satisfy_thresh()) {
         printf("[test_satisfy_thresh] failed!\n");
+        ok = false;
+    }
+    if (!test_decode_negative()) {
+        printf("[test_decode_negative] failed!\n");
+        ok = false;
+    }
+    if (!test_satisfy_negative()) {
+        printf("[test_satisfy_negative] failed!\n");
         ok = false;
     }
     wally_cleanup(0);

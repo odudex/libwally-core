@@ -1035,6 +1035,11 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
         case NT_THRESH_E: {
             ms_node *parent = node_alloc(KIND_MINISCRIPT_THRESH);
             if (!parent) { ret = WALLY_ENOMEM; goto cleanup; }
+            if (cur.k == 0 || cur.k > cur.n) {
+                ms_node_free(parent);
+                ret = WALLY_EINVAL;
+                goto cleanup;
+            }
             parent->number = (int64_t)cur.k;
             ms_node *head = NULL, *tail = NULL;
             for (uint32_t i = 0; i < cur.n; i++) {
