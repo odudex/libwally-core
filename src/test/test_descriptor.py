@@ -553,5 +553,62 @@ class DescriptorTests(unittest.TestCase):
                     wally_descriptor_free(d)
 
 
+    def test_wrappers(self):
+        """Test miniscript wrapper expressions (a:, s:, c:, d:, v:, j:, n:, l:, u:, t:)"""
+        keys = wally_map_from_dict({
+            'key_local': '038bc7431d9285a064b0328b6333f3a20b86664437b6de8f4e26e6bbdee258f048',
+        })
+        script, script_len = make_cbuffer('00' * 256 * 2)
+
+        # pk_k push: 21 <33-byte compressed pubkey>
+        pk_push = '21038bc7431d9285a064b0328b6333f3a20b86664437b6de8f4e26e6bbdee258f048'
+
+        # (miniscript, expected_script_hex)
+        # In libwally, multiple wrappers use a single colon with all chars before it,
+        # e.g. "ac:pk_k" applies c: first then a: (wrappers applied in reverse order).
+        # c: [pk_k] CHECKSIG
+        c_pk = pk_push + 'ac'
+        # vc: pk_k CHECKSIGVERIFY (v: replaces trailing CHECKSIG with CHECKSIGVERIFY)
+        vc_pk = pk_push + 'ad'
+
+        wrapper_cases = [
+            # c: wrapper — pk_k(K) -> [K] CHECKSIG
+            ('c:pk_k(key_local)', c_pk),
+            # a: wrapper — TOALTSTACK [X] FROMALTSTACK  (X = c:pk_k, type B)
+            ('ac:pk_k(key_local)', '6b' + c_pk + '6c'),
+            # s: wrapper — SWAP [X]  (X = c:pk_k, type Bo)
+            ('sc:pk_k(key_local)', '7c' + c_pk),
+            # v: wrapper — replaces trailing CHECKSIG with CHECKSIGVERIFY
+            ('vc:pk_k(key_local)', vc_pk),
+            # d: wrapper — DUP IF [X] ENDIF  (X = v:older(1), type Vz)
+            # older(1) = OP_1(51) OP_CSV(b2); v: appends OP_VERIFY(69) since CSV not replaceable
+            ('dv:older(1)', '7663' + '51b269' + '68'),
+            # j: wrapper — SIZE 0NOTEQUAL IF [X] ENDIF  (X = c:pk_k, type Bn)
+            ('jc:pk_k(key_local)', '829263' + c_pk + '68'),
+            # n: wrapper — [X] 0NOTEQUAL  (X = c:pk_k, type B)
+            ('nc:pk_k(key_local)', c_pk + '92'),
+            # l: wrapper — or_i(0, X): IF 0 ELSE [X] ENDIF  (X = c:pk_k, type B)
+            ('lc:pk_k(key_local)', '630067' + c_pk + '68'),
+            # u: wrapper — or_i(X, 0): IF [X] ELSE 0 ENDIF  (X = c:pk_k, type B)
+            ('uc:pk_k(key_local)', '63' + c_pk + '670068'),
+            # t: wrapper — and_v(X, 1): [X] OP_1  (X = vc:pk_k, type V)
+            ('tvc:pk_k(key_local)', vc_pk + '51'),
+        ]
+
+        for miniscript, expected in wrapper_cases:
+            d = c_void_p()
+            ret = wally_descriptor_parse(miniscript, keys, NETWORK_NONE, MS_ONLY, d)
+            self.assertEqual(ret, WALLY_OK, f'parse failed for: {miniscript}')
+            ret, written = wally_descriptor_to_script(d, 0, 0, 0, 0, 0, 0, script, script_len)
+            self.assertEqual(ret, WALLY_OK, f'to_script failed for: {miniscript}')
+            self.assertEqual(written, len(expected) // 2,
+                             f'wrong length for: {miniscript}')
+            self.assertEqual(script[:written], make_cbuffer(expected)[0],
+                             f'wrong script for: {miniscript}')
+            wally_descriptor_free(d)
+
+        wally_map_free(keys)
+
+
 if __name__ == '__main__':
     unittest.main()
