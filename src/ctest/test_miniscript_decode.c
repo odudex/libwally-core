@@ -1420,6 +1420,32 @@ static void make_fake_schnorr_sig(unsigned char *sig, unsigned char byte)
     memset(sig, byte, 64);
 }
 
+typedef struct {
+    sig_ctx_t sig;
+    tl_ctx_t  tl;
+} thresh_sig_tl_ctx_t;
+
+static bool thresh_sig_tl_lookup_sig(const ms_satisfier *stfr,
+                                     const unsigned char *pk, size_t pk_len,
+                                     unsigned char *sig_out, size_t *sig_len_out)
+{
+    const thresh_sig_tl_ctx_t *ctx = (const thresh_sig_tl_ctx_t *)stfr->user_data;
+    for (size_t i = 0; i < ctx->sig.n; i++) {
+        if (pk_len == 33 && memcmp(pk, ctx->sig.entries[i].pk, 33) == 0) {
+            memcpy(sig_out, ctx->sig.entries[i].sig, ctx->sig.entries[i].sig_len);
+            *sig_len_out = ctx->sig.entries[i].sig_len;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool thresh_sig_tl_check_older(const ms_satisfier *stfr, uint32_t lock)
+{
+    const thresh_sig_tl_ctx_t *ctx = (const thresh_sig_tl_ctx_t *)stfr->user_data;
+    return lock <= ctx->tl.max_relative;
+}
+
 static bool test_satisfy_multi(void)
 {
     bool ok = true;
@@ -2196,6 +2222,180 @@ static bool test_satisfy_andor(void)
     return ok;
 }
 
+static bool test_satisfy_thresh(void)
+{
+    bool ok = true;
+    ms_node *node = NULL;
+    ms_satisfaction sat, dissat;
+    int ret;
+
+    unsigned char keyA[33], keyB[33];
+    memset(keyA, 0x0A, 33);
+    memset(keyB, 0x0B, 33);
+
+    /* thresh(2, older(100), s:pk_k(A)):
+     * script: <100> OP_CSV OP_SWAP <keyA_33bytes> OP_ADD OP_2 OP_EQUAL */
+    unsigned char scriptA[2 + 1 + 1 + 1 + 33 + 1 + 1 + 1]; /* 41 bytes */
+    {
+        size_t off = 0;
+        scriptA[off++] = 0x01; scriptA[off++] = 0x64;
+        scriptA[off++] = OP_CHECKSEQUENCEVERIFY;
+        scriptA[off++] = OP_SWAP;
+        scriptA[off++] = 0x21; memcpy(scriptA + off, keyA, 33); off += 33;
+        scriptA[off++] = OP_ADD;
+        scriptA[off++] = OP_2;
+        scriptA[off++] = OP_EQUAL;
+    }
+
+    /* thresh(3, older(100), s:pk_k(A), s:pk_k(B)):
+     * script: <100> OP_CSV OP_SWAP <keyA> OP_ADD OP_SWAP <keyB> OP_ADD OP_3 OP_EQUAL */
+    unsigned char scriptB[2 + 1 + 1 + 1 + 33 + 1 + 1 + 1 + 33 + 1 + 1 + 1]; /* 77 bytes */
+    {
+        size_t off = 0;
+        scriptB[off++] = 0x01; scriptB[off++] = 0x64;
+        scriptB[off++] = OP_CHECKSEQUENCEVERIFY;
+        scriptB[off++] = OP_SWAP;
+        scriptB[off++] = 0x21; memcpy(scriptB + off, keyA, 33); off += 33;
+        scriptB[off++] = OP_ADD;
+        scriptB[off++] = OP_SWAP;
+        scriptB[off++] = 0x21; memcpy(scriptB + off, keyB, 33); off += 33;
+        scriptB[off++] = OP_ADD;
+        scriptB[off++] = OP_3;
+        scriptB[off++] = OP_EQUAL;
+    }
+
+    /* Case 1: thresh(2, older(100), s:pk_k(A)): timelock met, sig_A available → SAT */
+    {
+        sig_entry_t entry;
+        entry.pk = keyA; make_fake_sig(entry.sig, 0xA1, 0xA2); entry.sig_len = 71;
+        thresh_sig_tl_ctx_t ctx = { { &entry, 1 }, { 100, 0 } };
+        ms_satisfier stfr = { thresh_sig_tl_lookup_sig, NULL, NULL, thresh_sig_tl_check_older, NULL, NULL, &ctx };
+
+        ret = decode_script_to_node(scriptA, sizeof(scriptA), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.witness.num_items == 1);
+        CHECK(sat.witness.items[0].data_len == 71);
+        CHECK(memcmp(sat.witness.items[0].data, entry.sig, 71) == 0);
+        CHECK(sat.has_sig == true);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 2: thresh(2, older(100), s:pk_k(A)): timelock not met, sig available → UNAVAILABLE
+     * older returns UNAVAILABLE when timelock not met, which propagates through thresh concat */
+    {
+        sig_entry_t entry;
+        entry.pk = keyA; make_fake_sig(entry.sig, 0xA1, 0xA2); entry.sig_len = 71;
+        thresh_sig_tl_ctx_t ctx = { { &entry, 1 }, { 0, 0 } };
+        ms_satisfier stfr = { thresh_sig_tl_lookup_sig, NULL, NULL, thresh_sig_tl_check_older, NULL, NULL, &ctx };
+
+        ret = decode_script_to_node(scriptA, sizeof(scriptA), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 3: thresh(2, older(100), s:pk_k(A)): timelock met, no sig → IMPOSSIBLE */
+    {
+        thresh_sig_tl_ctx_t ctx = { { NULL, 0 }, { 100, 0 } };
+        ms_satisfier stfr = { thresh_sig_tl_lookup_sig, NULL, NULL, thresh_sig_tl_check_older, NULL, NULL, &ctx };
+
+        ret = decode_script_to_node(scriptA, sizeof(scriptA), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 4: thresh(2, older(100), s:pk_k(A)): NULL satisfier → IMPOSSIBLE */
+    {
+        ret = decode_script_to_node(scriptA, sizeof(scriptA), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, NULL, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 5: thresh(3, older(100), s:pk_k(A), s:pk_k(B)): all three met → SAT */
+    {
+        sig_entry_t entries[2];
+        entries[0].pk = keyA; make_fake_sig(entries[0].sig, 0xA1, 0xA2); entries[0].sig_len = 71;
+        entries[1].pk = keyB; make_fake_sig(entries[1].sig, 0xB1, 0xB2); entries[1].sig_len = 71;
+        thresh_sig_tl_ctx_t ctx = { { entries, 2 }, { 100, 0 } };
+        ms_satisfier stfr = { thresh_sig_tl_lookup_sig, NULL, NULL, thresh_sig_tl_check_older, NULL, NULL, &ctx };
+
+        ret = decode_script_to_node(scriptB, sizeof(scriptB), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.witness.num_items == 2);
+        CHECK(sat.witness.items[0].data_len == 71); /* sig_B first (last child, first in witness) */
+        CHECK(memcmp(sat.witness.items[0].data, entries[1].sig, 71) == 0);
+        CHECK(sat.witness.items[1].data_len == 71); /* sig_A second */
+        CHECK(memcmp(sat.witness.items[1].data, entries[0].sig, 71) == 0);
+        CHECK(sat.has_sig == true);
+        CHECK(dissat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 6: thresh(3, older(100), s:pk_k(A), s:pk_k(B)): k=3 but only older+sig_A → IMPOSSIBLE */
+    {
+        sig_entry_t entry;
+        entry.pk = keyA; make_fake_sig(entry.sig, 0xA1, 0xA2); entry.sig_len = 71;
+        thresh_sig_tl_ctx_t ctx = { { &entry, 1 }, { 100, 0 } };
+        ms_satisfier stfr = { thresh_sig_tl_lookup_sig, NULL, NULL, thresh_sig_tl_check_older, NULL, NULL, &ctx };
+
+        ret = decode_script_to_node(scriptB, sizeof(scriptB), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_IMPOSSIBLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 7: thresh(3, older(100), s:pk_k(A), s:pk_k(B)): malleable mode, all met → SAT */
+    {
+        sig_entry_t entries[2];
+        entries[0].pk = keyA; make_fake_sig(entries[0].sig, 0xA1, 0xA2); entries[0].sig_len = 71;
+        entries[1].pk = keyB; make_fake_sig(entries[1].sig, 0xB1, 0xB2); entries[1].sig_len = 71;
+        thresh_sig_tl_ctx_t ctx = { { entries, 2 }, { 100, 0 } };
+        ms_satisfier stfr = { thresh_sig_tl_lookup_sig, NULL, NULL, thresh_sig_tl_check_older, NULL, NULL, &ctx };
+
+        ret = decode_script_to_node(scriptB, sizeof(scriptB), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, &stfr, true, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.witness.num_items == 2);
+        CHECK(sat.has_sig == true);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    return ok;
+}
+
 int main(void)
 {
     bool ok = true;
@@ -2285,6 +2485,10 @@ int main(void)
     }
     if (!test_satisfy_andor()) {
         printf("[test_satisfy_andor] failed!\n");
+        ok = false;
+    }
+    if (!test_satisfy_thresh()) {
+        printf("[test_satisfy_thresh] failed!\n");
         ok = false;
     }
     wally_cleanup(0);
