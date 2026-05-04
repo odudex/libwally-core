@@ -1,5 +1,6 @@
 #include "internal.h"
 
+#include <include/wally_descriptor.h>
 #include <include/wally_elements.h>
 #include <include/wally_musig.h>
 #include <include/wally_script.h>
@@ -7372,3 +7373,300 @@ int wally_psbt_get_output_blinding_status(const struct wally_psbt *psbt, size_t 
 #undef MAX_INVALID_SATOSHI
 #endif /* WALLY_ABI_NO_ELEMENTS */
 
+#ifndef BUILD_STANDARD_SECP
+
+/* Maximum number of elements in a BIP-32 path */
+#define PSBT_MAX_PATH_ELEMS 256u
+
+static int pubkey_cmp(const void *a, const void *b)
+{
+    return memcmp(a, b, EC_PUBLIC_KEY_LEN);
+}
+
+/* Parse a participant key string (xpub[/child_path] or hex pubkey) to a
+ * 33-byte compressed pubkey, deriving child_num if a wildcard path is present.
+ */
+static int musig_participant_key_str_to_pubkey(
+    const char *key_str, uint32_t child_num,
+    unsigned char *pubkey_out)
+{
+    size_t str_len = strlen(key_str);
+    const char *slash;
+    struct ext_key master;
+    int ret;
+
+    /* Check for raw hex pubkey (66 hex chars = 33 bytes compressed) */
+    if (str_len == EC_PUBLIC_KEY_LEN * 2) {
+        size_t written;
+        return wally_hex_n_to_bytes(key_str, str_len,
+                                    pubkey_out, EC_PUBLIC_KEY_LEN, &written);
+    }
+
+    /* BIP-32 key: find optional child path after '/' */
+    slash = memchr(key_str, '/', str_len);
+
+    ret = bip32_key_from_base58_n(key_str, slash ? (size_t)(slash - key_str) : str_len, &master);
+    if (ret != WALLY_OK)
+        return ret;
+
+    if (slash) {
+        const uint32_t flags = BIP32_FLAG_STR_WILDCARD | BIP32_FLAG_STR_BARE;
+        const uint32_t derive_flags = BIP32_FLAG_KEY_PUBLIC | BIP32_FLAG_SKIP_HASH;
+        uint32_t path_buf[PSBT_MAX_PATH_ELEMS];
+        struct ext_key derived;
+        size_t path_len;
+
+        ret = bip32_path_from_str(slash + 1, child_num, 0, flags,
+                                  path_buf, PSBT_MAX_PATH_ELEMS, &path_len);
+        if (ret == WALLY_OK)
+            ret = bip32_key_from_parent_path(&master, path_buf, path_len,
+                                             derive_flags, &derived);
+        if (ret == WALLY_OK)
+            memcpy(pubkey_out, derived.pub_key, EC_PUBLIC_KEY_LEN);
+        wally_clear(&derived, sizeof(derived));
+    } else {
+        memcpy(pubkey_out, master.pub_key, EC_PUBLIC_KEY_LEN);
+    }
+    wally_clear(&master, sizeof(master));
+    return ret;
+}
+
+/* Get the full BIP-32 derivation path (origin + child) and fingerprint for a
+ * musig() participant key. The caller must wally_free(*path_out) when done.
+ */
+static int musig_participant_get_full_path(
+    const struct wally_descriptor *descriptor,
+    size_t musig_key_idx, size_t participant_idx,
+    uint32_t child_num,
+    unsigned char *fp_out,
+    uint32_t **path_out, size_t *path_len_out)
+{
+    char *key_str = NULL;
+    char *origin_path_str = NULL;
+    char *full_path_str = NULL;
+    uint32_t features = 0;
+    uint32_t *path = NULL;
+    const char *slash;
+    size_t path_len;
+    int ret;
+    bool need_free_full = false;
+
+    memset(fp_out, 0, BIP32_KEY_FINGERPRINT_LEN);
+    *path_out = NULL;
+    *path_len_out = 0;
+
+    ret = wally_descriptor_get_musig_participant_key(
+        descriptor, musig_key_idx, participant_idx, &key_str);
+    if (ret != WALLY_OK)
+        return ret;
+
+    ret = wally_descriptor_get_musig_participant_key_features(
+        descriptor, musig_key_idx, participant_idx, &features);
+    if (ret != WALLY_OK)
+        goto cleanup;
+
+    if (features & WALLY_MS_IS_PARENTED) {
+        ret = wally_descriptor_get_musig_participant_key_origin_fingerprint(
+            descriptor, musig_key_idx, participant_idx,
+            fp_out, BIP32_KEY_FINGERPRINT_LEN);
+        if (ret != WALLY_OK)
+            goto cleanup;
+
+        ret = wally_descriptor_get_musig_participant_key_origin_path_str(
+            descriptor, musig_key_idx, participant_idx, &origin_path_str);
+        if (ret != WALLY_OK)
+            goto cleanup;
+    }
+
+    /* Find optional child path in key string (after '/') */
+    slash = strchr(key_str, '/');
+    need_free_full = false;
+
+    if (origin_path_str && slash) {
+        /* Combine: origin_path/child_path */
+        size_t orig_len = strlen(origin_path_str);
+        size_t child_len = strlen(slash + 1);
+        full_path_str = wally_malloc(orig_len + 1 + child_len + 1);
+        if (!full_path_str) {
+            ret = WALLY_ENOMEM;
+            goto cleanup;
+        }
+        memcpy(full_path_str, origin_path_str, orig_len);
+        full_path_str[orig_len] = '/';
+        memcpy(full_path_str + orig_len + 1, slash + 1, child_len);
+        full_path_str[orig_len + 1 + child_len] = '\0';
+        need_free_full = true;
+    } else if (origin_path_str) {
+        full_path_str = origin_path_str;
+        origin_path_str = NULL;
+    } else if (slash) {
+        full_path_str = (char *)(slash + 1);
+    }
+
+    if (full_path_str && full_path_str[0]) {
+        const uint32_t flags = BIP32_FLAG_STR_WILDCARD | BIP32_FLAG_STR_BARE;
+
+        ret = bip32_path_from_str_len(full_path_str, child_num, 0, flags, &path_len);
+        if (ret != WALLY_OK)
+            goto cleanup;
+
+        if (path_len) {
+            path = wally_malloc(path_len * sizeof(uint32_t));
+            if (!path) {
+                ret = WALLY_ENOMEM;
+                goto cleanup;
+            }
+            ret = bip32_path_from_str(full_path_str, child_num, 0, flags,
+                                      path, path_len, &path_len);
+            if (ret != WALLY_OK) {
+                wally_free(path);
+                path = NULL;
+                goto cleanup;
+            }
+            *path_out = path;
+            *path_len_out = path_len;
+        }
+    }
+
+cleanup:
+    wally_free_string(key_str);
+    wally_free_string(origin_path_str);
+    if (need_free_full)
+        wally_free(full_path_str);
+    return ret;
+}
+
+int wally_psbt_populate_musig2_from_descriptor(
+    struct wally_psbt *psbt,
+    const struct wally_descriptor *descriptor,
+    uint32_t child_num,
+    uint32_t flags)
+{
+    uint32_t num_keys, features;
+    size_t musig_idx;
+    int ret = WALLY_OK;
+
+    if (!psbt || !descriptor || flags)
+        return WALLY_EINVAL;
+
+    ret = wally_descriptor_get_num_keys(descriptor, &num_keys);
+    if (ret != WALLY_OK)
+        return ret;
+
+    for (musig_idx = 0; musig_idx < num_keys && ret == WALLY_OK; ++musig_idx) {
+        unsigned char *raw_pubkeys = NULL, *sorted_pubkeys = NULL;
+        unsigned char agg_xonly[EC_XONLY_PUBLIC_KEY_LEN];
+        unsigned char agg_comp[EC_PUBLIC_KEY_LEN];
+        struct wally_musig_keyagg_cache *cache = NULL;
+        size_t n_participants = 0, j, k;
+
+        features = 0;
+        ret = wally_descriptor_get_key_features(descriptor, musig_idx, &features);
+        if (ret != WALLY_OK)
+            break;
+        if (!(features & WALLY_MS_IS_MUSIG))
+            continue;
+
+        /* Collect participant pubkeys */
+        ret = wally_descriptor_get_musig_num_participants(
+            descriptor, musig_idx, &n_participants);
+        if (ret != WALLY_OK)
+            break;
+        if (n_participants < 2) {
+            ret = WALLY_EINVAL;
+            break;
+        }
+
+        raw_pubkeys = wally_malloc(n_participants * EC_PUBLIC_KEY_LEN);
+        sorted_pubkeys = wally_malloc(n_participants * EC_PUBLIC_KEY_LEN);
+        if (!raw_pubkeys || !sorted_pubkeys) {
+            ret = WALLY_ENOMEM;
+            goto free_bufs;
+        }
+
+        for (j = 0; j < n_participants && ret == WALLY_OK; ++j) {
+            char *key_str = NULL;
+            ret = wally_descriptor_get_musig_participant_key(
+                descriptor, musig_idx, j, &key_str);
+            if (ret == WALLY_OK) {
+                ret = musig_participant_key_str_to_pubkey(
+                    key_str, child_num,
+                    raw_pubkeys + j * EC_PUBLIC_KEY_LEN);
+                wally_free_string(key_str);
+            }
+        }
+        if (ret != WALLY_OK)
+            goto free_bufs;
+
+        /* Sort participant pubkeys for aggregation (BIP-390) */
+        memcpy(sorted_pubkeys, raw_pubkeys, n_participants * EC_PUBLIC_KEY_LEN);
+        qsort(sorted_pubkeys, n_participants, EC_PUBLIC_KEY_LEN, pubkey_cmp);
+
+        /* Compute aggregate pubkeys */
+        ret = wally_musig_pubkey_agg(sorted_pubkeys,
+                                     n_participants * EC_PUBLIC_KEY_LEN,
+                                     agg_xonly, sizeof(agg_xonly), &cache);
+        if (ret != WALLY_OK)
+            goto free_bufs;
+
+        ret = wally_musig_pubkey_get(cache, agg_comp, sizeof(agg_comp));
+        wally_musig_keyagg_cache_free(cache);
+        cache = NULL;
+        if (ret != WALLY_OK)
+            goto free_bufs;
+
+        /* Populate inputs */
+        for (j = 0; j < psbt->num_inputs && ret == WALLY_OK; ++j) {
+            struct wally_psbt_input *inp = &psbt->inputs[j];
+
+            ret = wally_psbt_input_add_musig2_participant_pubkeys(
+                inp, agg_comp, EC_PUBLIC_KEY_LEN,
+                sorted_pubkeys, n_participants * EC_PUBLIC_KEY_LEN);
+            if (ret != WALLY_OK)
+                break;
+
+            ret = wally_psbt_input_set_taproot_internal_key(
+                inp, agg_xonly, EC_XONLY_PUBLIC_KEY_LEN);
+            if (ret != WALLY_OK)
+                break;
+
+            for (k = 0; k < n_participants && ret == WALLY_OK; ++k) {
+                unsigned char fp[BIP32_KEY_FINGERPRINT_LEN];
+                uint32_t *path = NULL;
+                size_t path_len = 0;
+                const unsigned char *xonly = raw_pubkeys + k * EC_PUBLIC_KEY_LEN + 1;
+
+                ret = musig_participant_get_full_path(
+                    descriptor, musig_idx, k, child_num,
+                    fp, &path, &path_len);
+                if (ret != WALLY_OK)
+                    break;
+
+                ret = wally_psbt_input_taproot_keypath_add(
+                    inp,
+                    xonly, EC_XONLY_PUBLIC_KEY_LEN,
+                    NULL, 0,
+                    fp, BIP32_KEY_FINGERPRINT_LEN,
+                    path, path_len);
+                wally_free(path);
+            }
+        }
+        if (ret != WALLY_OK)
+            goto free_bufs;
+
+        /* Populate outputs */
+        for (j = 0; j < psbt->num_outputs && ret == WALLY_OK; ++j) {
+            struct wally_psbt_output *out = &psbt->outputs[j];
+            ret = wally_psbt_output_add_musig2_participant_pubkeys(
+                out, agg_comp, EC_PUBLIC_KEY_LEN,
+                sorted_pubkeys, n_participants * EC_PUBLIC_KEY_LEN);
+        }
+
+free_bufs:
+        wally_free(raw_pubkeys);
+        wally_free(sorted_pubkeys);
+    }
+    return ret;
+}
+
+#endif /* ndef BUILD_STANDARD_SECP */

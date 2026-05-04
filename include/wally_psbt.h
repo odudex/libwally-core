@@ -3053,6 +3053,28 @@ WALLY_CORE_API int wally_psbt_is_elements(
     const struct wally_psbt *psbt,
     size_t *written);
 
+/**
+ * Populate MuSig2 PSBT fields from a musig() descriptor.
+ *
+ * For each input and output in the PSBT, if the descriptor contains a musig()
+ * key expression, this function populates:
+ *
+ * - `PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS`: aggregate pubkey to participant pubkeys map
+ * - `PSBT_IN_TAP_BIP32_DERIVATION`: for each participant (x-only pubkey + derivation path)
+ * - `PSBT_IN_TAP_INTERNAL_KEY`: x-only aggregate pubkey (untweaked)
+ * - `PSBT_OUT_MUSIG2_PARTICIPANT_PUBKEYS`: for each output
+ *
+ * :param psbt: The PSBT to populate.
+ * :param descriptor: The parsed descriptor containing musig() expressions.
+ * :param child_num: The BIP32 child number for ranged descriptors.
+ * :param flags: For future use, pass 0.
+ */
+WALLY_CORE_API int wally_psbt_populate_musig2_from_descriptor(
+    struct wally_psbt *psbt,
+    const struct wally_descriptor *descriptor,
+    uint32_t child_num,
+    uint32_t flags);
+
 #ifdef __cplusplus
 }
 #endif
