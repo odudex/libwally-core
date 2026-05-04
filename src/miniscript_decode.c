@@ -1,6 +1,7 @@
 #include "config.h"
 #include "miniscript_decode.h"
 #include <include/wally_core.h>
+#include <include/wally_descriptor.h>
 #include <include/wally_script.h>
 #include <string.h>
 #include "script_int.h"
@@ -476,8 +477,6 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
     token_t *tokens          = NULL;
     nonterm_t nt;
 
-    (void)ctx_flags;
-
     size_t max_tokens = script_len * 2 + 1;
     tokens = wally_malloc(max_tokens * sizeof(token_t));
     if (!tokens) return WALLY_ENOMEM;
@@ -526,6 +525,8 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
                 memcpy(buf, key_bytes, key_len);
                 n->data = (const char *)buf;
                 n->data_len = (uint32_t)key_len;
+                if (key_len == 32 && (ctx_flags & WALLY_MINISCRIPT_TAPSCRIPT))
+                    n->flags |= WALLY_MS_IS_X_ONLY;
                 ret = terminal_stack_push(term, n);
                 if (ret != WALLY_OK) { ms_node_free(n); goto cleanup; }
                 break;

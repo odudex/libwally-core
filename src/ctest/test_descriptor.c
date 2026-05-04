@@ -1010,10 +1010,30 @@ static const struct descriptor_test {
         "5192", /* 1 OP_0NOTEQUAL */
         "d959hk4q", VARS_STD
     },
+    {
+        "miniscript - pk_k segwit v0",
+        "c:pk_k(key_1)",
+        WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
+        "21038bc7431d9285a064b0328b6333f3a20b86664437b6de8f4e26e6bbdee258f048ac",
+        ""
+    },
+    {
+        "miniscript - pk_h segwit v0",
+        "c:pk_h(key_1)",
+        WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
+        "76a914d0721279e70d39fb4aa409b52839a0056454e3b588ac",
+        ""
+    },
     /*
      * Miniscript taproot cases
      */
     {
+        "miniscript - pk_k tapscript x-only",
+        "c:pk_k(x_only)",
+        WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY | WALLY_MINISCRIPT_TAPSCRIPT,
+        "20b71aa79cab0ae2d83b82d44cbdc23f5dcca3797e8ba622c4e45a8f7dce28ba0eac",
+        ""
+    }, {
         "miniscript - taproot raw pubkey",
         "c:pk_k(daed4f2be3a8bf278e70132fb0beb7522f570e144bf615c07e996d443dee8729)",
         WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY | WALLY_MINISCRIPT_TAPSCRIPT,

@@ -52,6 +52,7 @@ class DescriptorTests(unittest.TestCase):
             'key_remote': '03a22745365f673e658f0d25eb0afa9aaece858c6a48dfe37a67210c2e23da8ce7',
             'key_revocation': '03b428da420cd337c7208ed42c5331ebb407bb59ffbe3dc27936a227c619804284',
             'H': 'd0721279e70d39fb4aa409b52839a0056454e3b5', # HASH160(key_local)
+            'x_only': 'b71aa79cab0ae2d83b82d44cbdc23f5dcca3797e8ba622c4e45a8f7dce28ba0e',
         })
         script, script_len = make_cbuffer('00' * 256 * 2)
 
@@ -72,6 +73,26 @@ class DescriptorTests(unittest.TestCase):
             self.assertEqual(written, len(expected) / 2)
             self.assertEqual(script[:written], make_cbuffer(expected)[0])
             wally_descriptor_free(d)
+
+        # pk_k and pk_h fragment tests: (miniscript, flags, expected_hex)
+        pk_args = [
+            ('c:pk_k(key_local)', MS_ONLY,
+             '21038bc7431d9285a064b0328b6333f3a20b86664437b6de8f4e26e6bbdee258f048ac'),
+            ('c:pk_h(key_local)', MS_ONLY,
+             '76a914d0721279e70d39fb4aa409b52839a0056454e3b588ac'),
+            ('c:pk_k(x_only)', MS_ONLY | MS_TAP,
+             '20b71aa79cab0ae2d83b82d44cbdc23f5dcca3797e8ba622c4e45a8f7dce28ba0eac'),
+        ]
+        for miniscript, flags, expected in pk_args:
+            d = c_void_p()
+            ret = wally_descriptor_parse(miniscript, keys, NETWORK_NONE, flags, d)
+            self.assertEqual(ret, WALLY_OK)
+            ret, written = wally_descriptor_to_script(d, 0, 0, 0, 0, 0, 0, script, script_len)
+            self.assertEqual(ret, WALLY_OK)
+            self.assertEqual(written, len(expected) // 2)
+            self.assertEqual(script[:written], make_cbuffer(expected)[0])
+            wally_descriptor_free(d)
+
         wally_map_free(keys)
 
         # Invalid args

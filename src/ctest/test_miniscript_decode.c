@@ -1,6 +1,7 @@
 #include "config.h"
 #include "miniscript_decode.h"
 #include <wally_core.h>
+#include <wally_descriptor.h>
 #include <wally_script.h>
 #include <stdio.h>
 #include <string.h>
@@ -480,6 +481,42 @@ static bool test_decode_pk(void)
         CHECK(output->data_len == 20);
         CHECK(memcmp(output->data, hash, 20) == 0);
         ms_node_free(output); output = NULL;
+    }
+
+    /* pk_k with a 32-byte x-only key in tapscript context: WALLY_MS_IS_X_ONLY must be set */
+    {
+        unsigned char script[33];
+        unsigned char key[32];
+        script[0] = 0x20;
+        memset(key, 0xef, 32);
+        memcpy(script + 1, key, 32);
+        ret = decode_script_to_node(script, 33, WALLY_MINISCRIPT_TAPSCRIPT, &output);
+        CHECK(ret == WALLY_OK);
+        CHECK(output != NULL);
+        CHECK(output->kind == KIND_MINISCRIPT_PK_K);
+        CHECK(output->data_len == 32);
+        CHECK(memcmp(output->data, key, 32) == 0);
+        CHECK(output->flags & WALLY_MS_IS_X_ONLY);
+        ms_node_free(output); output = NULL;
+    }
+
+    /* Error: truncated script (length byte claims 33 bytes but only 1 byte total) */
+    {
+        unsigned char script[1];
+        script[0] = 0x21; /* push 33 bytes, but nothing follows */
+        ret = decode_script_to_node(script, 1, 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
+    }
+
+    /* Error: wrong pubkey length (34-byte push — not a valid key size) */
+    {
+        unsigned char script[35];
+        script[0] = 0x22; /* push 34 bytes */
+        memset(script + 1, 0xab, 34);
+        ret = decode_script_to_node(script, 35, 0, &output);
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
     }
 
     return ok;
