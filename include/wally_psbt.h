@@ -126,6 +126,7 @@ struct wally_psbt_output {
     /* Hashes and paths for taproot bip32 derivation path */
     struct wally_map taproot_leaf_hashes;
     struct wally_map taproot_leaf_paths;
+    struct wally_map musig2_pubkeys; /* BIP-373: agg pubkey -> participant pubkeys */
 #ifndef WALLY_ABI_NO_ELEMENTS
     uint32_t blinder_index; /* Index of the input whose owner should blind this output */
     uint32_t has_blinder_index;
@@ -1717,6 +1718,46 @@ WALLY_CORE_API int wally_psbt_output_set_taproot_internal_key(
     const unsigned char *pub_key,
     size_t pub_key_len);
 
+/**
+ * Add or replace a musig2 participant pubkeys entry in an output.
+ *
+ * :param output: The output to update.
+ * :param agg_pubkey: The 33-byte compressed aggregate public key (map key).
+ * :param agg_pubkey_len: Length of ``agg_pubkey``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param participants: Concatenated 33-byte compressed participant public keys.
+ * :param participants_len: Length of ``participants``. Must be a multiple of
+ *|    `EC_PUBLIC_KEY_LEN` and at least ``2 * EC_PUBLIC_KEY_LEN``.
+ */
+WALLY_CORE_API int wally_psbt_output_add_musig2_participant_pubkeys(
+    struct wally_psbt_output *output,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    const unsigned char *participants,
+    size_t participants_len);
+
+/**
+ * Find a musig2 participant pubkeys entry in an output by aggregate pubkey.
+ *
+ * :param output: The output to search.
+ * :param agg_pubkey: The 33-byte compressed aggregate public key to look up.
+ * :param agg_pubkey_len: Length of ``agg_pubkey``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param written: On success, set to zero if not found, otherwise the 1-based index.
+ */
+WALLY_CORE_API int wally_psbt_output_find_musig2_pubkey(
+    const struct wally_psbt_output *output,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    size_t *written);
+
+/**
+ * Set the musig2 participant pubkeys map in an output.
+ *
+ * :param output: The output to update.
+ * :param map_in: Map of agg pubkey to participant pubkeys entries.
+ */
+WALLY_CORE_API int wally_psbt_output_set_musig2_pubkeys(
+    struct wally_psbt_output *output,
+    const struct wally_map *map_in);
 
 #ifndef WALLY_ABI_NO_ELEMENTS
 /**

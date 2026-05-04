@@ -1074,6 +1074,21 @@ MAP_INNER_FIELD(output, taproot_internal_key, PSBT_OUT_TAP_INTERNAL_KEY, psbt_fi
 SET_MAP(wally_psbt_output, keypath,)
 ADD_KEYPATH(wally_psbt_output)
 ADD_TAP_KEYPATH(wally_psbt_output)
+SET_MAP(wally_psbt_output, musig2_pubkey,)
+int wally_psbt_output_add_musig2_participant_pubkeys(struct wally_psbt_output *output,
+                                                     const unsigned char *agg_pubkey,
+                                                     size_t agg_pubkey_len,
+                                                     const unsigned char *participants,
+                                                     size_t participants_len)
+{
+    if (!output || !agg_pubkey || agg_pubkey_len != EC_PUBLIC_KEY_LEN ||
+        !participants || participants_len < EC_PUBLIC_KEY_LEN * 2 ||
+        participants_len % EC_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+    return wally_map_replace(&output->musig2_pubkeys,
+                             agg_pubkey, agg_pubkey_len,
+                             participants, participants_len);
+}
 SET_MAP(wally_psbt_output, unknown,)
 
 int wally_psbt_output_set_script(struct wally_psbt_output *output,
@@ -1323,6 +1338,7 @@ static void psbt_output_init(struct wally_psbt_output *output)
     wally_map_init(0, NULL, &output->taproot_tree);
     wally_map_init(0, map_leaf_hashes_verify, &output->taproot_leaf_hashes);
     wally_map_init(0, wally_keypath_xonly_public_key_verify, &output->taproot_leaf_paths);
+    wally_map_init(0, musig2_participant_pubkeys_verify, &output->musig2_pubkeys);
 #ifdef BUILD_ELEMENTS
     wally_map_init(0, pset_map_output_field_verify, &output->pset_fields);
 #endif /* BUILD_ELEMENTS */
@@ -1338,6 +1354,7 @@ static int psbt_output_free(struct wally_psbt_output *output, bool free_parent)
         wally_map_clear(&output->taproot_tree);
         wally_map_clear(&output->taproot_leaf_hashes);
         wally_map_clear(&output->taproot_leaf_paths);
+        wally_map_clear(&output->musig2_pubkeys);
 #ifdef BUILD_ELEMENTS
         wally_map_clear(&output->pset_fields);
 #endif /* BUILD_ELEMENTS */
@@ -2846,6 +2863,9 @@ static int pull_psbt_output(const struct wally_psbt *psbt,
                                               &result->taproot_leaf_hashes,
                                               &result->taproot_leaf_paths);
                 break;
+            case PSBT_OUT_MUSIG2_PARTICIPANT_PUBKEYS:
+                ret = pull_map_item(cursor, max, key, key_len, &result->musig2_pubkeys);
+                break;
 #ifdef BUILD_ELEMENTS
             case PSET_FT(PSET_OUT_BLINDER_INDEX):
                 result->blinder_index = pull_le32_subfield(cursor, max);
@@ -3591,6 +3611,8 @@ static int push_psbt_output(const struct wally_psbt *psbt,
             return ret;
     }
 
+    push_psbt_map(cursor, max, PSBT_OUT_MUSIG2_PARTICIPANT_PUBKEYS, false,
+                  &output->musig2_pubkeys);
 
 #ifdef BUILD_ELEMENTS
     if (is_pset && psbt->version == PSBT_2) {
@@ -4054,6 +4076,8 @@ static int combine_output(struct wally_psbt_output *dst,
         if (ret == WALLY_OK)
             ret = wally_map_combine(&dst->taproot_leaf_paths, &src->taproot_leaf_paths);
     }
+    if (ret == WALLY_OK)
+        ret = wally_map_combine(&dst->musig2_pubkeys, &src->musig2_pubkeys);
 
 #ifdef BUILD_ELEMENTS
     if (ret == WALLY_OK && is_pset) {
