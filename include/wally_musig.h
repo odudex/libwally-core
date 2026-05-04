@@ -284,6 +284,96 @@ WALLY_CORE_API int wally_musig_pubkey_xonly_tweak_add(
     unsigned char *pub_key_out,
     size_t pub_key_out_len);
 
+/* --- Nonce generation and aggregation functions --- */
+
+/**
+ * Generate a MuSig2 secret/public nonce pair.
+ *
+ * :param session_secrand32: 32-byte unique random session ID. MUST NOT be reused.
+ * :param session_secrand_len: Must be 32.
+ * :param seckey: 32-byte secret key of the signer (optional, can be NULL).
+ * :param seckey_len: Must be 32 if seckey is non-NULL, 0 otherwise.
+ * :param pubkey33: 33-byte compressed public key of this signer (required).
+ * :param pubkey_len: Must be EC_PUBLIC_KEY_LEN (33).
+ * :param keyagg_cache: keyagg_cache from wally_musig_pubkey_agg (optional, can be NULL).
+ * :param msg32: 32-byte message to be signed, if known (optional, can be NULL).
+ * :param msg_len: Must be 32 if msg32 is non-NULL, 0 otherwise.
+ * :param extra_input32: 32-byte extra entropy input (optional, can be NULL).
+ * :param extra_len: Must be 32 if extra_input32 is non-NULL, 0 otherwise.
+ * :param secnonce_out: Destination for the allocated secret nonce. Must be kept secret.
+ * :param pubnonce_out: Destination for the allocated public nonce to send to cosigners.
+ */
+WALLY_CORE_API int wally_musig_nonce_gen(
+    const unsigned char *session_secrand32,
+    size_t session_secrand_len,
+    const unsigned char *seckey,
+    size_t seckey_len,
+    const unsigned char *pubkey33,
+    size_t pubkey_len,
+    const struct wally_musig_keyagg_cache *keyagg_cache,
+    const unsigned char *msg32,
+    size_t msg_len,
+    const unsigned char *extra_input32,
+    size_t extra_len,
+    struct wally_musig_secnonce **secnonce_out,
+    struct wally_musig_pubnonce **pubnonce_out);
+
+/**
+ * Generate a MuSig2 secret/public nonce pair using a counter-based session ID.
+ *
+ * WARNING: Nonce reuse in MuSig2 is catastrophic. Calling this function with
+ * the same (counter, seckey) pair more than once — across calls, sessions, or
+ * process restarts — leaks the private key. The counter MUST be stored durably
+ * and incremented before each signing session. See BIP-327 §Nonce generation,
+ * "Synthetic nonces". Prefer wally_musig_nonce_gen() for non-hardware-wallet use.
+ *
+ * This variant is intended for hardware wallets or deterministic signers that
+ * cannot generate random session IDs. The uint64_t counter is serialized as an
+ * 8-byte little-endian value, zero-padded to 32 bytes, and used as the
+ * session_id32. Per BIP-327, seckey MUST be provided when using a counter.
+ *
+ * :param counter: Monotonically increasing counter. Reuse with the same seckey
+ *   leaks the private key. Persist and increment in durable storage.
+ * :param seckey: 32-byte secret key of the signer (REQUIRED for counter mode).
+ * :param seckey_len: Must be 32.
+ * :param pubkey33: 33-byte compressed public key of this signer (required).
+ * :param pubkey_len: Must be EC_PUBLIC_KEY_LEN (33).
+ * :param keyagg_cache: keyagg_cache from wally_musig_pubkey_agg (optional, can be NULL).
+ * :param msg32: 32-byte message to be signed, if known (optional, can be NULL).
+ * :param msg_len: Must be 32 if msg32 is non-NULL, 0 otherwise.
+ * :param extra_input32: 32-byte extra entropy input (optional, can be NULL).
+ * :param extra_len: Must be 32 if extra_input32 is non-NULL, 0 otherwise.
+ * :param secnonce_out: Destination for the allocated secret nonce. Must be kept secret.
+ * :param pubnonce_out: Destination for the allocated public nonce to send to cosigners.
+ */
+WALLY_CORE_API int wally_musig_nonce_gen_counter(
+    uint64_t counter,
+    const unsigned char *seckey,
+    size_t seckey_len,
+    const unsigned char *pubkey33,
+    size_t pubkey_len,
+    const struct wally_musig_keyagg_cache *keyagg_cache,
+    const unsigned char *msg32,
+    size_t msg_len,
+    const unsigned char *extra_input32,
+    size_t extra_len,
+    struct wally_musig_secnonce **secnonce_out,
+    struct wally_musig_pubnonce **pubnonce_out);
+
+/**
+ * Aggregate N serialized public nonces into a single aggregate nonce.
+ *
+ * :param pubnonces: Flat array of serialized pubnonces (each WALLY_MUSIG_PUBNONCE_LEN bytes).
+ * :param pubnonces_len: Total byte length. Must equal n_pubnonces * WALLY_MUSIG_PUBNONCE_LEN.
+ * :param n_pubnonces: Number of pubnonces. Must be >= 2.
+ * :param aggnonce_out: Destination for the allocated aggregate nonce.
+ */
+WALLY_CORE_API int wally_musig_nonce_agg(
+    const unsigned char *pubnonces,
+    size_t pubnonces_len,
+    size_t n_pubnonces,
+    struct wally_musig_aggnonce **aggnonce_out);
+
 #endif /* ndef BUILD_STANDARD_SECP */
 
 #ifdef __cplusplus

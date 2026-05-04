@@ -455,4 +455,220 @@ WALLY_CORE_API int wally_musig_pubkey_xonly_tweak_add(
     return WALLY_OK;
 }
 
+/* --- Nonce generation and aggregation functions --- */
+
+WALLY_CORE_API int wally_musig_nonce_gen(
+    const unsigned char *session_secrand32,
+    size_t session_secrand_len,
+    const unsigned char *seckey,
+    size_t seckey_len,
+    const unsigned char *pubkey33,
+    size_t pubkey_len,
+    const struct wally_musig_keyagg_cache *keyagg_cache,
+    const unsigned char *msg32,
+    size_t msg_len,
+    const unsigned char *extra_input32,
+    size_t extra_len,
+    struct wally_musig_secnonce **secnonce_out,
+    struct wally_musig_pubnonce **pubnonce_out)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_musig_secnonce *secnonce = NULL;
+    secp256k1_musig_pubnonce *pubnonce = NULL;
+    secp256k1_pubkey pubkey;
+
+    if (!session_secrand32 || session_secrand_len != 32)
+        return WALLY_EINVAL;
+    if (seckey && seckey_len != 32)
+        return WALLY_EINVAL;
+    if (!seckey && seckey_len != 0)
+        return WALLY_EINVAL;
+    if (!pubkey33 || pubkey_len != EC_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+    if (msg32 && msg_len != 32)
+        return WALLY_EINVAL;
+    if (!msg32 && msg_len != 0)
+        return WALLY_EINVAL;
+    if (extra_input32 && extra_len != 32)
+        return WALLY_EINVAL;
+    if (!extra_input32 && extra_len != 0)
+        return WALLY_EINVAL;
+    if (!secnonce_out || !pubnonce_out)
+        return WALLY_EINVAL;
+    *secnonce_out = NULL;
+    *pubnonce_out = NULL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    if (!pubkey_parse(&pubkey, pubkey33, pubkey_len))
+        return WALLY_EINVAL;
+
+    secnonce = wally_calloc(sizeof(secp256k1_musig_secnonce));
+    if (!secnonce)
+        return WALLY_ENOMEM;
+
+    pubnonce = wally_calloc(sizeof(secp256k1_musig_pubnonce));
+    if (!pubnonce) {
+        wally_free(secnonce);
+        return WALLY_ENOMEM;
+    }
+
+    if (!secp256k1_musig_nonce_gen(ctx, secnonce, pubnonce,
+                                   session_secrand32, seckey, &pubkey,
+                                   msg32,
+                                   keyagg_cache ? (const secp256k1_musig_keyagg_cache *)keyagg_cache : NULL,
+                                   extra_input32)) {
+        clear_and_free(secnonce, sizeof(*secnonce));
+        wally_free(pubnonce);
+        return WALLY_ERROR;
+    }
+
+    *secnonce_out = (struct wally_musig_secnonce *)secnonce;
+    *pubnonce_out = (struct wally_musig_pubnonce *)pubnonce;
+    return WALLY_OK;
+}
+
+WALLY_CORE_API int wally_musig_nonce_gen_counter(
+    uint64_t counter,
+    const unsigned char *seckey,
+    size_t seckey_len,
+    const unsigned char *pubkey33,
+    size_t pubkey_len,
+    const struct wally_musig_keyagg_cache *keyagg_cache,
+    const unsigned char *msg32,
+    size_t msg_len,
+    const unsigned char *extra_input32,
+    size_t extra_len,
+    struct wally_musig_secnonce **secnonce_out,
+    struct wally_musig_pubnonce **pubnonce_out)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_musig_secnonce *secnonce = NULL;
+    secp256k1_musig_pubnonce *pubnonce = NULL;
+    secp256k1_pubkey pubkey;
+    unsigned char session_id32[32];
+    int ret;
+
+    /* seckey is REQUIRED for counter mode */
+    if (!seckey || seckey_len != 32)
+        return WALLY_EINVAL;
+    if (!pubkey33 || pubkey_len != EC_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+    if (msg32 && msg_len != 32)
+        return WALLY_EINVAL;
+    if (!msg32 && msg_len != 0)
+        return WALLY_EINVAL;
+    if (extra_input32 && extra_len != 32)
+        return WALLY_EINVAL;
+    if (!extra_input32 && extra_len != 0)
+        return WALLY_EINVAL;
+    if (!secnonce_out || !pubnonce_out)
+        return WALLY_EINVAL;
+    *secnonce_out = NULL;
+    *pubnonce_out = NULL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    if (!pubkey_parse(&pubkey, pubkey33, pubkey_len))
+        return WALLY_EINVAL;
+
+    /* Serialize counter as 8-byte little-endian into a zero-padded 32-byte buffer */
+    memset(session_id32, 0, sizeof(session_id32));
+    for (size_t i = 0; i < 8; i++)
+        session_id32[i] = (unsigned char)((counter >> (8 * i)) & 0xff);
+
+    secnonce = wally_calloc(sizeof(secp256k1_musig_secnonce));
+    if (!secnonce) {
+        memset(session_id32, 0, sizeof(session_id32));
+        return WALLY_ENOMEM;
+    }
+
+    pubnonce = wally_calloc(sizeof(secp256k1_musig_pubnonce));
+    if (!pubnonce) {
+        wally_free(secnonce);
+        memset(session_id32, 0, sizeof(session_id32));
+        return WALLY_ENOMEM;
+    }
+
+    ret = secp256k1_musig_nonce_gen(ctx, secnonce, pubnonce,
+                                    session_id32, seckey, &pubkey,
+                                    msg32,
+                                    keyagg_cache ? (const secp256k1_musig_keyagg_cache *)keyagg_cache : NULL,
+                                    extra_input32);
+    memset(session_id32, 0, sizeof(session_id32));
+
+    if (!ret) {
+        clear_and_free(secnonce, sizeof(*secnonce));
+        wally_free(pubnonce);
+        return WALLY_ERROR;
+    }
+
+    *secnonce_out = (struct wally_musig_secnonce *)secnonce;
+    *pubnonce_out = (struct wally_musig_pubnonce *)pubnonce;
+    return WALLY_OK;
+}
+
+WALLY_CORE_API int wally_musig_nonce_agg(
+    const unsigned char *pubnonces,
+    size_t pubnonces_len,
+    size_t n_pubnonces,
+    struct wally_musig_aggnonce **aggnonce_out)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_musig_pubnonce *parsed = NULL;
+    const secp256k1_musig_pubnonce **ptrs = NULL;
+    secp256k1_musig_aggnonce *aggnonce = NULL;
+    size_t i;
+    int ret = WALLY_EINVAL;
+
+    if (!pubnonces || n_pubnonces < 2)
+        return WALLY_EINVAL;
+    if (pubnonces_len != n_pubnonces * WALLY_MUSIG_PUBNONCE_LEN)
+        return WALLY_EINVAL;
+    if (!aggnonce_out)
+        return WALLY_EINVAL;
+    *aggnonce_out = NULL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    parsed = wally_calloc(n_pubnonces * sizeof(secp256k1_musig_pubnonce));
+    if (!parsed)
+        return WALLY_ENOMEM;
+
+    ptrs = wally_calloc(n_pubnonces * sizeof(secp256k1_musig_pubnonce *));
+    if (!ptrs) {
+        wally_free(parsed);
+        return WALLY_ENOMEM;
+    }
+
+    for (i = 0; i < n_pubnonces; i++) {
+        if (!secp256k1_musig_pubnonce_parse(ctx, &parsed[i],
+                                            pubnonces + i * WALLY_MUSIG_PUBNONCE_LEN))
+            goto cleanup;
+        ptrs[i] = &parsed[i];
+    }
+
+    aggnonce = wally_calloc(sizeof(secp256k1_musig_aggnonce));
+    if (!aggnonce) {
+        ret = WALLY_ENOMEM;
+        goto cleanup;
+    }
+
+    if (!secp256k1_musig_nonce_agg(ctx, aggnonce, ptrs, n_pubnonces)) {
+        ret = WALLY_ERROR;
+        goto cleanup;
+    }
+
+    *aggnonce_out = (struct wally_musig_aggnonce *)aggnonce;
+    aggnonce = NULL;
+    ret = WALLY_OK;
+
+cleanup:
+    if (aggnonce)
+        wally_free(aggnonce);
+    wally_free(ptrs);
+    wally_free(parsed);
+    return ret;
+}
+
 #endif /* ndef BUILD_STANDARD_SECP */
