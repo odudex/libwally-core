@@ -1347,6 +1347,156 @@ static bool test_decode_wrappers(void)
     return ok;
 }
 
+typedef struct {
+    uint32_t max_relative;
+    uint32_t max_absolute;
+} tl_ctx_t;
+
+static bool tl_check_older(const ms_satisfier *stfr, uint32_t lock)
+{
+    const tl_ctx_t *ctx = (const tl_ctx_t *)stfr->user_data;
+    return lock <= ctx->max_relative;
+}
+
+static bool tl_check_after(const ms_satisfier *stfr, uint32_t lock)
+{
+    const tl_ctx_t *ctx = (const tl_ctx_t *)stfr->user_data;
+    return lock <= ctx->max_absolute;
+}
+
+static bool test_satisfy_timelocks(void)
+{
+    bool ok = true;
+    ms_node *node = NULL;
+    ms_satisfaction sat, dissat;
+    int ret;
+
+    /* Case 1: older(100) — check_older returns true */
+    {
+        unsigned char script[] = { 0x01, 0x64, OP_CHECKSEQUENCEVERIFY };
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 100, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.relative_timelock == 100);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 2: older(100) — check_older returns false */
+    {
+        unsigned char script[] = { 0x01, 0x64, OP_CHECKSEQUENCEVERIFY };
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 0, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 3: older(100) — no satisfier (NULL) */
+    {
+        unsigned char script[] = { 0x01, 0x64, OP_CHECKSEQUENCEVERIFY };
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        satisfy_node(node, NULL, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 4: after(500) — check_after returns true */
+    {
+        unsigned char script[] = { 0x02, 0xF4, 0x01, OP_CHECKLOCKTIMEVERIFY };
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 0, 500 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.absolute_timelock == 500);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 5: after(500) — check_after returns false */
+    {
+        unsigned char script[] = { 0x02, 0xF4, 0x01, OP_CHECKLOCKTIMEVERIFY };
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 0, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_UNAVAILABLE);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 6: and_v(v:older(100), older(200)) — timelocks merged (max) */
+    {
+        /* Script: <100> OP_CSV OP_VERIFY <200> OP_CSV
+         * 200 = 0xC8 has high bit set, needs 2-byte CScriptNum encoding: 0xC8 0x00 */
+        unsigned char script[] = {
+            0x01, 0x64,                 /* push 1 byte: 100 */
+            OP_CHECKSEQUENCEVERIFY,
+            OP_VERIFY,
+            0x02, 0xC8, 0x00,           /* push 2 bytes: 200 (0xC8 needs sign byte) */
+            OP_CHECKSEQUENCEVERIFY
+        };
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 200, 0 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.relative_timelock == 200);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    /* Case 7: and_v(v:older(100), after(500)) — mixed timelocks */
+    {
+        /* Script: <100> OP_CSV OP_VERIFY <500> OP_CLTV */
+        unsigned char script[] = {
+            0x01, 0x64,                 /* push 1 byte: 100 */
+            OP_CHECKSEQUENCEVERIFY,
+            OP_VERIFY,
+            0x02, 0xF4, 0x01,           /* push 2 bytes: 500 */
+            OP_CHECKLOCKTIMEVERIFY
+        };
+        ret = decode_script_to_node(script, sizeof(script), 0, &node);
+        CHECK(ret == WALLY_OK);
+        CHECK(node != NULL);
+        tl_ctx_t ctx = { 100, 500 };
+        ms_satisfier stfr = { NULL, NULL, NULL, tl_check_older, tl_check_after, NULL, &ctx };
+        satisfy_node(node, &stfr, false, &sat, &dissat);
+        CHECK(sat.witness.kind == MS_WITNESS_STACK);
+        CHECK(sat.relative_timelock == 100);
+        CHECK(sat.absolute_timelock == 500);
+        ms_satisfaction_free(&sat);
+        ms_satisfaction_free(&dissat);
+        ms_node_free(node); node = NULL;
+    }
+
+    return ok;
+}
+
 int main(void)
 {
     bool ok = true;
@@ -1404,6 +1554,10 @@ int main(void)
     }
     if (!test_decode_wrappers()) {
         printf("[test_decode_wrappers] failed!\n");
+        ok = false;
+    }
+    if (!test_satisfy_timelocks()) {
+        printf("[test_satisfy_timelocks] failed!\n");
         ok = false;
     }
     wally_cleanup(0);
