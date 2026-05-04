@@ -74,20 +74,25 @@ void ms_satisfaction_free(ms_satisfaction *s);
 ms_satisfaction satisfaction_best(ms_satisfaction a, ms_satisfaction b);
 void satisfaction_or_b(ms_satisfaction sat_l, ms_satisfaction dissat_l,
                        ms_satisfaction sat_r, ms_satisfaction dissat_r,
-                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out);
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out,
+                       bool malleable);
 void satisfaction_or_c(ms_satisfaction sat_l, ms_satisfaction dissat_l,
                        ms_satisfaction sat_r, ms_satisfaction dissat_r,
-                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out);
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out,
+                       bool malleable);
 void satisfaction_or_d(ms_satisfaction sat_l, ms_satisfaction dissat_l,
                        ms_satisfaction sat_r, ms_satisfaction dissat_r,
-                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out);
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out,
+                       bool malleable);
 void satisfaction_or_i(ms_satisfaction sat_l, ms_satisfaction dissat_l,
                        ms_satisfaction sat_r, ms_satisfaction dissat_r,
-                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out);
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out,
+                       bool malleable);
 void satisfaction_andor(ms_satisfaction sat_x, ms_satisfaction dissat_x,
                         ms_satisfaction sat_y, ms_satisfaction dissat_y,
                         ms_satisfaction sat_z, ms_satisfaction dissat_z,
-                        ms_satisfaction *sat_out, ms_satisfaction *dissat_out);
+                        ms_satisfaction *sat_out, ms_satisfaction *dissat_out,
+                        bool malleable);
 void satisfaction_thresh(size_t k, size_t n,
                          ms_satisfaction *sats,
                          ms_satisfaction *dissats,

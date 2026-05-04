@@ -5530,9 +5530,17 @@ static bool p2wsh_lookup_preimage(const ms_satisfier *stfr,
                                   uint32_t hash_type,
                                   unsigned char preimage_out[32])
 {
+    static const unsigned char ms_to_psbt[] = {
+        PSBT_IN_SHA256,    /* MS_HASH_SHA256    = 0 */
+        PSBT_IN_HASH256,   /* MS_HASH_HASH256   = 1 */
+        PSBT_IN_RIPEMD160, /* MS_HASH_RIPEMD160 = 2 */
+        PSBT_IN_HASH160,   /* MS_HASH_HASH160   = 3 */
+    };
     const struct p2wsh_sat_ctx *ctx = stfr->user_data;
-    const struct wally_map_item *item =
-        find_preimage(ctx->input, (unsigned char)hash_type, hash, hash_len);
+    const struct wally_map_item *item;
+    if (hash_type >= sizeof(ms_to_psbt) / sizeof(ms_to_psbt[0]))
+        return false;
+    item = find_preimage(ctx->input, ms_to_psbt[hash_type], hash, hash_len);
     if (!item || item->value_len > 32)
         return false;
     memcpy(preimage_out, item->value, item->value_len);
@@ -5614,9 +5622,17 @@ static bool p2tr_lookup_preimage(const ms_satisfier *stfr,
                                   uint32_t hash_type,
                                   unsigned char preimage_out[32])
 {
+    static const unsigned char ms_to_psbt[] = {
+        PSBT_IN_SHA256,    /* MS_HASH_SHA256    = 0 */
+        PSBT_IN_HASH256,   /* MS_HASH_HASH256   = 1 */
+        PSBT_IN_RIPEMD160, /* MS_HASH_RIPEMD160 = 2 */
+        PSBT_IN_HASH160,   /* MS_HASH_HASH160   = 3 */
+    };
     const p2tr_sat_ctx *ctx = stfr->user_data;
-    const struct wally_map_item *item =
-        find_preimage(ctx->input, (unsigned char)hash_type, hash, hash_len);
+    const struct wally_map_item *item;
+    if (hash_type >= sizeof(ms_to_psbt) / sizeof(ms_to_psbt[0]))
+        return false;
+    item = find_preimage(ctx->input, ms_to_psbt[hash_type], hash, hash_len);
     if (!item || item->value_len > 32)
         return false;
     memcpy(preimage_out, item->value, item->value_len);
@@ -5671,11 +5687,11 @@ static bool finalize_p2wsh(const struct wally_psbt *psbt,
 
     memset(&sat, 0, sizeof(sat));
     memset(&dissat, 0, sizeof(dissat));
-    satisfy_node(node, &stfr, false, &sat, &dissat);
+    satisfy_node(node, &stfr, true, &sat, &dissat);
     ms_node_free(node);
     node = NULL;
 
-    if (sat.witness.kind == MS_WITNESS_IMPOSSIBLE)
+    if (sat.witness.kind != MS_WITNESS_STACK)
         goto cleanup;
 
     if (wally_tx_witness_stack_init_alloc(sat.witness.num_items + 1, &witness) != WALLY_OK)
@@ -5732,11 +5748,11 @@ static bool finalize_multisig(const struct wally_psbt *psbt,
 
     memset(&sat, 0, sizeof(sat));
     memset(&dissat, 0, sizeof(dissat));
-    satisfy_node(node, &stfr, false, &sat, &dissat);
+    satisfy_node(node, &stfr, true, &sat, &dissat);
     ms_node_free(node);
     node = NULL;
 
-    if (sat.witness.kind == MS_WITNESS_IMPOSSIBLE)
+    if (sat.witness.kind != MS_WITNESS_STACK)
         goto cleanup;
 
     if (is_witness) {
@@ -5894,7 +5910,7 @@ static int select_best_tapscript_leaf(
             };
             memset(&sat, 0, sizeof(sat));
             memset(&dissat, 0, sizeof(dissat));
-            satisfy_node(node, &stfr, false, &sat, &dissat);
+            satisfy_node(node, &stfr, true, &sat, &dissat);
         }
         ms_node_free(node);
         ms_satisfaction_free(&dissat);
@@ -6047,11 +6063,11 @@ static bool finalize_csv2of2_1(const struct wally_psbt *psbt,
 
     memset(&sat, 0, sizeof(sat));
     memset(&dissat, 0, sizeof(dissat));
-    satisfy_node(node, &stfr, false, &sat, &dissat);
+    satisfy_node(node, &stfr, true, &sat, &dissat);
     ms_node_free(node);
     node = NULL;
 
-    if (sat.witness.kind == MS_WITNESS_IMPOSSIBLE)
+    if (sat.witness.kind != MS_WITNESS_STACK)
         goto cleanup;
 
     if (wally_tx_witness_stack_init_alloc(sat.witness.num_items + 1, &witness) != WALLY_OK)
@@ -6125,6 +6141,14 @@ int wally_psbt_finalize_input(struct wally_psbt *psbt, size_t index, uint32_t fl
     if (out_script &&
         wally_scriptpubkey_get_type(out_script, out_script_len, &type) != WALLY_OK)
         return WALLY_OK; /* Invalid/missing script */
+
+    /* When a witness script replaced out_script but its type is unrecognised,
+     * re-detect from the utxo scriptpubkey so miniscript P2WSH reaches
+     * finalize_p2wsh (which reads the witness script internally). */
+    if (type == WALLY_SCRIPT_TYPE_UNKNOWN && is_witness && script &&
+        input->witness_utxo && input->witness_utxo->script_len)
+        wally_scriptpubkey_get_type(input->witness_utxo->script,
+                                    input->witness_utxo->script_len, &type);
 
     switch (type) {
     case WALLY_SCRIPT_TYPE_P2PKH:

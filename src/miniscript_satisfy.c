@@ -323,16 +323,22 @@ static ms_satisfaction satisfaction_push_item(ms_satisfaction s,
  */
 void satisfaction_or_b(ms_satisfaction sat_l, ms_satisfaction dissat_l,
                        ms_satisfaction sat_r, ms_satisfaction dissat_r,
-                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out)
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out,
+                       bool malleable)
 {
     ms_satisfaction dissat_l_clone = ms_satisfaction_clone(&dissat_l);
     ms_satisfaction dissat_r_clone = ms_satisfaction_clone(&dissat_r);
 
     *dissat_out = satisfaction_concat(dissat_r_clone, dissat_l_clone);
 
-    *sat_out = satisfaction_best(
-        satisfaction_concat(sat_r, dissat_l),
-        satisfaction_concat(dissat_r, sat_l));
+    if (malleable)
+        *sat_out = satisfaction_minimum_mall(
+            satisfaction_concat(sat_r, dissat_l),
+            satisfaction_concat(dissat_r, sat_l));
+    else
+        *sat_out = satisfaction_best(
+            satisfaction_concat(sat_r, dissat_l),
+            satisfaction_concat(dissat_r, sat_l));
 }
 
 /*
@@ -347,12 +353,16 @@ void satisfaction_or_b(ms_satisfaction sat_l, ms_satisfaction dissat_l,
  */
 void satisfaction_or_c(ms_satisfaction sat_l, ms_satisfaction dissat_l,
                        ms_satisfaction sat_r, ms_satisfaction dissat_r,
-                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out)
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out,
+                       bool malleable)
 {
     ms_satisfaction_free(&dissat_r);
     ms_satisfaction_init(dissat_out, MS_WITNESS_IMPOSSIBLE);
 
-    *sat_out = satisfaction_best(sat_l, satisfaction_concat(sat_r, dissat_l));
+    if (malleable)
+        *sat_out = satisfaction_minimum_mall(sat_l, satisfaction_concat(sat_r, dissat_l));
+    else
+        *sat_out = satisfaction_best(sat_l, satisfaction_concat(sat_r, dissat_l));
 }
 
 /*
@@ -367,13 +377,17 @@ void satisfaction_or_c(ms_satisfaction sat_l, ms_satisfaction dissat_l,
  */
 void satisfaction_or_d(ms_satisfaction sat_l, ms_satisfaction dissat_l,
                        ms_satisfaction sat_r, ms_satisfaction dissat_r,
-                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out)
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out,
+                       bool malleable)
 {
     ms_satisfaction dissat_l_clone = ms_satisfaction_clone(&dissat_l);
 
     *dissat_out = satisfaction_concat(dissat_r, dissat_l_clone);
 
-    *sat_out = satisfaction_best(sat_l, satisfaction_concat(sat_r, dissat_l));
+    if (malleable)
+        *sat_out = satisfaction_minimum_mall(sat_l, satisfaction_concat(sat_r, dissat_l));
+    else
+        *sat_out = satisfaction_best(sat_l, satisfaction_concat(sat_r, dissat_l));
 }
 
 /*
@@ -390,13 +404,19 @@ void satisfaction_or_d(ms_satisfaction sat_l, ms_satisfaction dissat_l,
  */
 void satisfaction_or_i(ms_satisfaction sat_l, ms_satisfaction dissat_l,
                        ms_satisfaction sat_r, ms_satisfaction dissat_r,
-                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out)
+                       ms_satisfaction *sat_out, ms_satisfaction *dissat_out,
+                       bool malleable)
 {
     static const unsigned char push_1_data[] = {0x01};
 
-    *sat_out = satisfaction_best(
-        satisfaction_push_item(sat_l, push_1_data, 1),
-        satisfaction_push_item(sat_r, NULL, 0));
+    if (malleable)
+        *sat_out = satisfaction_minimum_mall(
+            satisfaction_push_item(sat_l, push_1_data, 1),
+            satisfaction_push_item(sat_r, NULL, 0));
+    else
+        *sat_out = satisfaction_best(
+            satisfaction_push_item(sat_l, push_1_data, 1),
+            satisfaction_push_item(sat_r, NULL, 0));
 
     *dissat_out = satisfaction_minimum_mall(
         satisfaction_push_item(dissat_l, push_1_data, 1),
@@ -421,7 +441,8 @@ void satisfaction_or_i(ms_satisfaction sat_l, ms_satisfaction dissat_l,
 void satisfaction_andor(ms_satisfaction sat_x, ms_satisfaction dissat_x,
                         ms_satisfaction sat_y, ms_satisfaction dissat_y,
                         ms_satisfaction sat_z, ms_satisfaction dissat_z,
-                        ms_satisfaction *sat_out, ms_satisfaction *dissat_out)
+                        ms_satisfaction *sat_out, ms_satisfaction *dissat_out,
+                        bool malleable)
 {
     ms_satisfaction dissat_x_clone = ms_satisfaction_clone(&dissat_x);
 
@@ -429,9 +450,14 @@ void satisfaction_andor(ms_satisfaction sat_x, ms_satisfaction dissat_x,
 
     *dissat_out = satisfaction_concat(dissat_z, dissat_x_clone);
 
-    *sat_out = satisfaction_best(
-        satisfaction_concat(sat_y, sat_x),
-        satisfaction_concat(sat_z, dissat_x));
+    if (malleable)
+        *sat_out = satisfaction_minimum_mall(
+            satisfaction_concat(sat_y, sat_x),
+            satisfaction_concat(sat_z, dissat_x));
+    else
+        *sat_out = satisfaction_best(
+            satisfaction_concat(sat_y, sat_x),
+            satisfaction_concat(sat_z, dissat_x));
 }
 
 /*
@@ -717,8 +743,11 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
                 ms_satisfaction_init(&entry.dissat, MS_WITNESS_STACK);
                 entry.dissat = satisfaction_push_item(entry.dissat, zero32, 32);
             } else {
-                ms_satisfaction_init(&entry.sat,    MS_WITNESS_UNAVAILABLE);
-                ms_satisfaction_init(&entry.dissat, MS_WITNESS_UNAVAILABLE);
+                ms_satisfaction_init(&entry.sat, MS_WITNESS_UNAVAILABLE);
+                /* Dissatisfaction for hash fragments is always possible:
+                 * any 32-byte non-matching value suffices. */
+                ms_satisfaction_init(&entry.dissat, MS_WITNESS_STACK);
+                entry.dissat = satisfaction_push_item(entry.dissat, zero32, 32);
             }
             break;
         }
@@ -1089,7 +1118,7 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
             ms_satisfaction_free(&entry.dissat);
             satisfaction_andor(x.sat, x.dissat, y.sat, y.dissat,
                                z.sat, z.dissat,
-                               &entry.sat, &entry.dissat);
+                               &entry.sat, &entry.dissat, malleable);
             break;
         }
 
@@ -1099,7 +1128,7 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
             ms_satisfaction_free(&entry.sat);
             ms_satisfaction_free(&entry.dissat);
             satisfaction_or_b(l.sat, l.dissat, r.sat, r.dissat,
-                              &entry.sat, &entry.dissat);
+                              &entry.sat, &entry.dissat, malleable);
             break;
         }
 
@@ -1109,7 +1138,7 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
             ms_satisfaction_free(&entry.sat);
             ms_satisfaction_free(&entry.dissat);
             satisfaction_or_c(l.sat, l.dissat, r.sat, r.dissat,
-                              &entry.sat, &entry.dissat);
+                              &entry.sat, &entry.dissat, malleable);
             break;
         }
 
@@ -1119,7 +1148,7 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
             ms_satisfaction_free(&entry.sat);
             ms_satisfaction_free(&entry.dissat);
             satisfaction_or_d(l.sat, l.dissat, r.sat, r.dissat,
-                              &entry.sat, &entry.dissat);
+                              &entry.sat, &entry.dissat, malleable);
             break;
         }
 
@@ -1129,7 +1158,7 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
             ms_satisfaction_free(&entry.sat);
             ms_satisfaction_free(&entry.dissat);
             satisfaction_or_i(l.sat, l.dissat, r.sat, r.dissat,
-                              &entry.sat, &entry.dissat);
+                              &entry.sat, &entry.dissat, malleable);
             break;
         }
 
