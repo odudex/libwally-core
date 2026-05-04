@@ -609,6 +609,53 @@ class DescriptorTests(unittest.TestCase):
 
         wally_map_free(keys)
 
+    def test_composite_descriptors(self):
+        """Test composite miniscript expressions (and_v, or_d, andor) including Liana-style templates"""
+        keys = wally_map_from_dict({
+            'key_local':      '038bc7431d9285a064b0328b6333f3a20b86664437b6de8f4e26e6bbdee258f048',
+            'key_remote':     '03a22745365f673e658f0d25eb0afa9aaece858c6a48dfe37a67210c2e23da8ce7',
+            'key_revocation': '03b428da420cd337c7208ed42c5331ebb407bb59ffbe3dc27936a227c619804284',
+            'x_only':         'b71aa79cab0ae2d83b82d44cbdc23f5dcca3797e8ba622c4e45a8f7dce28ba0e',
+        })
+        script, script_len = make_cbuffer('00' * 512 * 2)
+
+        cases = [
+            # Case A: Liana-like recovery leaf — key + timelock
+            # and_v(X,Y) -> [X][Y]
+            # vc:pk_k -> push(K) OP_CHECKSIGVERIFY; older(52560=0xCD50) -> 03 50 CD 00 OP_CSV
+            ('and_v(vc:pk_k(key_local),older(52560))', MS_ONLY,
+             '21038bc7431d9285a064b0328b6333f3a20b86664437b6de8f4e26e6bbdee258f048'
+             'ad0350cd00b2'),
+            # Case B: Primary key OR (recovery key + timelock)
+            # or_d(X,Y) -> [X] OP_IFDUP(73) OP_NOTIF(64) [Y] OP_ENDIF(68)
+            ('or_d(c:pk_k(key_local),and_v(vc:pk_k(key_remote),older(52560)))', MS_ONLY,
+             '21038bc7431d9285a064b0328b6333f3a20b86664437b6de8f4e26e6bbdee258f048ac'
+             '73642103a22745365f673e658f0d25eb0afa9aaece858c6a48dfe37a67210c2e23da8ce7ad'
+             '0350cd00b268'),
+            # Case C: andor — if primary key succeeds use timelock, else use revocation key
+            # andor(X,Y,Z) -> [X] OP_NOTIF(64) [Z] OP_ELSE(67) [Y] OP_ENDIF(68)
+            ('andor(c:pk_k(key_local),older(52560),c:pk_k(key_revocation))', MS_ONLY,
+             '21038bc7431d9285a064b0328b6333f3a20b86664437b6de8f4e26e6bbdee258f048ac'
+             '642103b428da420cd337c7208ed42c5331ebb407bb59ffbe3dc27936a227c619804284ac'
+             '670350cd00b268'),
+            # Case D: Tapscript — x-only key uses 32-byte push (opcode 20)
+            ('and_v(vc:pk_k(x_only),older(52560))', MS_ONLY | MS_TAP,
+             '20b71aa79cab0ae2d83b82d44cbdc23f5dcca3797e8ba622c4e45a8f7dce28ba0e'
+             'ad0350cd00b2'),
+        ]
+
+        for miniscript, flags, expected in cases:
+            d = c_void_p()
+            ret = wally_descriptor_parse(miniscript, keys, NETWORK_NONE, flags, d)
+            self.assertEqual(ret, WALLY_OK, f'parse failed for: {miniscript}')
+            ret, written = wally_descriptor_to_script(d, 0, 0, 0, 0, 0, 0, script, script_len)
+            self.assertEqual(ret, WALLY_OK, f'to_script failed for: {miniscript}')
+            self.assertEqual(written, len(expected) // 2, f'wrong length for: {miniscript}')
+            self.assertEqual(script[:written], make_cbuffer(expected)[0], f'wrong script for: {miniscript}')
+            wally_descriptor_free(d)
+
+        wally_map_free(keys)
+
 
 if __name__ == '__main__':
     unittest.main()
