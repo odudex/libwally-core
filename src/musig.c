@@ -671,4 +671,197 @@ cleanup:
     return ret;
 }
 
+WALLY_CORE_API int wally_musig_nonce_process(
+    const struct wally_musig_aggnonce *aggnonce,
+    const unsigned char *msg32,
+    size_t msg32_len,
+    const struct wally_musig_keyagg_cache *cache,
+    const unsigned char *adaptor,
+    size_t adaptor_len,
+    struct wally_musig_session **session_out)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_musig_session *session = NULL;
+    secp256k1_pubkey adaptor_pk;
+    int ret = WALLY_EINVAL;
+
+    if (!aggnonce || !msg32 || msg32_len != 32)
+        return WALLY_EINVAL;
+    if (!cache || !session_out)
+        return WALLY_EINVAL;
+    if (adaptor && adaptor_len != EC_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+    if (!adaptor && adaptor_len)
+        return WALLY_EINVAL;
+    *session_out = NULL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    if (adaptor && !pubkey_parse(&adaptor_pk, adaptor, adaptor_len))
+        return WALLY_EINVAL;
+
+    session = wally_calloc(sizeof(secp256k1_musig_session));
+    if (!session)
+        return WALLY_ENOMEM;
+
+    if (!secp256k1_musig_nonce_process(ctx, session,
+                                       (const secp256k1_musig_aggnonce *)aggnonce,
+                                       msg32,
+                                       (const secp256k1_musig_keyagg_cache *)cache,
+                                       adaptor ? &adaptor_pk : NULL)) {
+        ret = WALLY_ERROR;
+        goto cleanup;
+    }
+
+    *session_out = (struct wally_musig_session *)session;
+    session = NULL;
+    ret = WALLY_OK;
+
+cleanup:
+    if (session)
+        wally_free(session);
+    return ret;
+}
+
+WALLY_CORE_API int wally_musig_partial_sign(
+    struct wally_musig_secnonce *secnonce,
+    const unsigned char *seckey,
+    size_t seckey_len,
+    const struct wally_musig_keyagg_cache *cache,
+    const struct wally_musig_session *session,
+    struct wally_musig_partial_sig **partial_sig_out)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_keypair keypair;
+    secp256k1_musig_partial_sig *partial_sig = NULL;
+    int ret = WALLY_EINVAL;
+
+    if (!secnonce || !seckey || seckey_len != 32)
+        return WALLY_EINVAL;
+    if (!cache || !session || !partial_sig_out)
+        return WALLY_EINVAL;
+    *partial_sig_out = NULL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    if (!secp256k1_keypair_create(ctx, &keypair, seckey)) {
+        ret = WALLY_EINVAL;
+        goto cleanup;
+    }
+
+    partial_sig = wally_calloc(sizeof(secp256k1_musig_partial_sig));
+    if (!partial_sig) {
+        ret = WALLY_ENOMEM;
+        goto cleanup;
+    }
+
+    if (!secp256k1_musig_partial_sign(ctx, partial_sig,
+                                      (secp256k1_musig_secnonce *)secnonce,
+                                      &keypair,
+                                      (const secp256k1_musig_keyagg_cache *)cache,
+                                      (const secp256k1_musig_session *)session)) {
+        ret = WALLY_ERROR;
+        goto cleanup;
+    }
+
+    *partial_sig_out = (struct wally_musig_partial_sig *)partial_sig;
+    partial_sig = NULL;
+    ret = WALLY_OK;
+
+cleanup:
+    wally_clear(&keypair, sizeof(keypair));
+    if (partial_sig)
+        wally_free(partial_sig);
+    return ret;
+}
+
+WALLY_CORE_API int wally_musig_partial_sig_verify(
+    const struct wally_musig_partial_sig *sig,
+    const struct wally_musig_pubnonce *pubnonce,
+    const unsigned char *pubkey,
+    size_t pubkey_len,
+    const struct wally_musig_keyagg_cache *cache,
+    const struct wally_musig_session *session)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_pubkey pk;
+
+    if (!sig || !pubnonce || !pubkey || pubkey_len != EC_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+    if (!cache || !session)
+        return WALLY_EINVAL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    if (!pubkey_parse(&pk, pubkey, pubkey_len))
+        return WALLY_EINVAL;
+
+    if (!secp256k1_musig_partial_sig_verify(ctx,
+                                            (const secp256k1_musig_partial_sig *)sig,
+                                            (const secp256k1_musig_pubnonce *)pubnonce,
+                                            &pk,
+                                            (const secp256k1_musig_keyagg_cache *)cache,
+                                            (const secp256k1_musig_session *)session))
+        return WALLY_ERROR;
+
+    return WALLY_OK;
+}
+
+WALLY_CORE_API int wally_musig_partial_sig_agg(
+    const unsigned char *partial_sigs,
+    size_t partial_sigs_len,
+    size_t n_sigs,
+    const struct wally_musig_session *session,
+    unsigned char *sig64_out,
+    size_t sig64_out_len)
+{
+    const secp256k1_context *ctx = secp_ctx();
+    secp256k1_musig_partial_sig *parsed = NULL;
+    const secp256k1_musig_partial_sig **ptrs = NULL;
+    size_t i;
+    int ret = WALLY_EINVAL;
+
+    if (!partial_sigs || n_sigs < 2)
+        return WALLY_EINVAL;
+    if (partial_sigs_len != n_sigs * WALLY_MUSIG_PARTIAL_SIG_LEN)
+        return WALLY_EINVAL;
+    if (!session || !sig64_out || sig64_out_len != EC_SIGNATURE_LEN)
+        return WALLY_EINVAL;
+    if (!ctx)
+        return WALLY_ENOMEM;
+
+    parsed = wally_calloc(n_sigs * sizeof(secp256k1_musig_partial_sig));
+    if (!parsed)
+        return WALLY_ENOMEM;
+
+    ptrs = wally_calloc(n_sigs * sizeof(secp256k1_musig_partial_sig *));
+    if (!ptrs) {
+        wally_free(parsed);
+        return WALLY_ENOMEM;
+    }
+
+    for (i = 0; i < n_sigs; i++) {
+        if (!secp256k1_musig_partial_sig_parse(ctx, &parsed[i],
+                                               partial_sigs + i * WALLY_MUSIG_PARTIAL_SIG_LEN)) {
+            ret = WALLY_EINVAL;
+            goto cleanup;
+        }
+        ptrs[i] = &parsed[i];
+    }
+
+    if (!secp256k1_musig_partial_sig_agg(ctx, sig64_out,
+                                         (const secp256k1_musig_session *)session,
+                                         ptrs, n_sigs)) {
+        ret = WALLY_ERROR;
+        goto cleanup;
+    }
+
+    ret = WALLY_OK;
+
+cleanup:
+    wally_free(ptrs);
+    wally_free(parsed);
+    return ret;
+}
+
 #endif /* ndef BUILD_STANDARD_SECP */

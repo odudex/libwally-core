@@ -374,6 +374,93 @@ WALLY_CORE_API int wally_musig_nonce_agg(
     size_t n_pubnonces,
     struct wally_musig_aggnonce **aggnonce_out);
 
+/* --- Signing and verification functions --- */
+
+/**
+ * Process the aggregate nonce and message to create a signing session.
+ *
+ * Must be called by every participant after nonce aggregation and before signing.
+ *
+ * :param aggnonce: The aggregate nonce from wally_musig_nonce_agg.
+ * :param msg32: The 32-byte message to sign.
+ * :param msg32_len: Must be 32.
+ * :param cache: The keyagg_cache from wally_musig_pubkey_agg (and optional tweaks).
+ * :param adaptor: Optional 33-byte compressed adaptor public key (can be NULL).
+ * :param adaptor_len: Must be EC_PUBLIC_KEY_LEN if adaptor is non-NULL, 0 otherwise.
+ * :param session_out: Destination for the allocated session.
+ */
+WALLY_CORE_API int wally_musig_nonce_process(
+    const struct wally_musig_aggnonce *aggnonce,
+    const unsigned char *msg32,
+    size_t msg32_len,
+    const struct wally_musig_keyagg_cache *cache,
+    const unsigned char *adaptor,
+    size_t adaptor_len,
+    struct wally_musig_session **session_out);
+
+/**
+ * Produce a partial signature for this participant.
+ *
+ * WARNING: The secnonce is irrevocably zeroed whenever secp256k1_musig_partial_sign
+ * is reached (i.e., when WALLY_OK or WALLY_ERROR is returned). Input validation
+ * failures (WALLY_EINVAL) do not consume the secnonce. Never attempt to sign
+ * twice with the same secnonce.
+ *
+ * :param secnonce: The secret nonce from wally_musig_nonce_gen (zeroed after use).
+ * :param seckey: The 32-byte secret key of this signer.
+ * :param seckey_len: Must be 32.
+ * :param cache: The keyagg_cache from wally_musig_pubkey_agg.
+ * :param session: The session from wally_musig_nonce_process.
+ * :param partial_sig_out: Destination for the allocated partial signature.
+ */
+WALLY_CORE_API int wally_musig_partial_sign(
+    struct wally_musig_secnonce *secnonce,
+    const unsigned char *seckey,
+    size_t seckey_len,
+    const struct wally_musig_keyagg_cache *cache,
+    const struct wally_musig_session *session,
+    struct wally_musig_partial_sig **partial_sig_out);
+
+/**
+ * Verify a partial signature from one participant.
+ *
+ * Returns WALLY_OK if valid, WALLY_ERROR if the signature is invalid,
+ * WALLY_EINVAL for bad arguments.
+ *
+ * :param sig: The partial signature to verify.
+ * :param pubnonce: The signer's public nonce (from round 1).
+ * :param pubkey: The signer's 33-byte compressed public key.
+ * :param pubkey_len: Must be EC_PUBLIC_KEY_LEN (33).
+ * :param cache: The keyagg_cache from wally_musig_pubkey_agg.
+ * :param session: The session from wally_musig_nonce_process.
+ */
+WALLY_CORE_API int wally_musig_partial_sig_verify(
+    const struct wally_musig_partial_sig *sig,
+    const struct wally_musig_pubnonce *pubnonce,
+    const unsigned char *pubkey,
+    size_t pubkey_len,
+    const struct wally_musig_keyagg_cache *cache,
+    const struct wally_musig_session *session);
+
+/**
+ * Aggregate N partial signatures into a final 64-byte BIP-340 Schnorr signature.
+ *
+ * :param partial_sigs: Flat array of serialized partial signatures
+ *                      (each WALLY_MUSIG_PARTIAL_SIG_LEN bytes).
+ * :param partial_sigs_len: Total byte length. Must equal n_sigs * WALLY_MUSIG_PARTIAL_SIG_LEN.
+ * :param n_sigs: Number of partial signatures. Must be >= 2.
+ * :param session: The session from wally_musig_nonce_process.
+ * :param sig64_out: 64-byte buffer to receive the final Schnorr signature.
+ * FIXED_SIZED_OUTPUT(sig64_out_len, sig64_out, EC_SIGNATURE_LEN)
+ */
+WALLY_CORE_API int wally_musig_partial_sig_agg(
+    const unsigned char *partial_sigs,
+    size_t partial_sigs_len,
+    size_t n_sigs,
+    const struct wally_musig_session *session,
+    unsigned char *sig64_out,
+    size_t sig64_out_len);
+
 #endif /* ndef BUILD_STANDARD_SECP */
 
 #ifdef __cplusplus
