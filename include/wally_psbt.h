@@ -9,8 +9,13 @@
 extern "C" {
 #endif
 
-/* Forward declaration for use in taproot descriptor functions */
+/** An opaque type holding a parsed minscript/descriptor expression */
 struct wally_descriptor;
+
+/* Forward declarations for MuSig2 opaque types used in PSBT functions */
+struct wally_musig_keyagg_cache;
+struct wally_musig_secnonce;
+struct wally_musig_partial_sig;
 
 /* PSBT Version number */
 #define WALLY_PSBT_VERSION_0 0x0
@@ -91,6 +96,7 @@ struct wally_psbt_input {
     /* Hashes and paths for taproot bip32 derivation path */
     struct wally_map taproot_leaf_hashes;
     struct wally_map taproot_leaf_paths;
+    struct wally_map musig2_pubkeys;      /* BIP-373: agg pubkey -> participant pubkeys */
 #ifndef WALLY_ABI_NO_ELEMENTS
     uint64_t issuance_amount; /* Issuance amount, or 0 if not given */
     uint64_t inflation_keys; /* Number of reissuance tokens, or 0 if none given */
@@ -425,6 +431,47 @@ WALLY_CORE_API int wally_psbt_input_add_taproot_leaf_signature(
 WALLY_CORE_API int wally_psbt_input_get_taproot_leaf_signature_count(
     const struct wally_psbt_input *input,
     size_t *written);
+
+/**
+ * Add or replace a musig2 participant pubkeys entry in an input.
+ *
+ * :param input: The input to update.
+ * :param agg_pubkey: The 33-byte compressed aggregate public key (map key).
+ * :param agg_pubkey_len: Length of ``agg_pubkey``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param participants: Concatenated 33-byte compressed participant public keys.
+ * :param participants_len: Length of ``participants``. Must be a multiple of
+ *|    `EC_PUBLIC_KEY_LEN` and at least ``2 * EC_PUBLIC_KEY_LEN``.
+ */
+WALLY_CORE_API int wally_psbt_input_add_musig2_participant_pubkeys(
+    struct wally_psbt_input *input,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    const unsigned char *participants,
+    size_t participants_len);
+
+/**
+ * Find a musig2 participant pubkeys entry in an input by aggregate pubkey.
+ *
+ * :param input: The input to search.
+ * :param agg_pubkey: The 33-byte compressed aggregate public key to look up.
+ * :param agg_pubkey_len: Length of ``agg_pubkey``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param written: On success, set to zero if not found, otherwise the 1-based index.
+ */
+WALLY_CORE_API int wally_psbt_input_find_musig2_pubkey(
+    const struct wally_psbt_input *input,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    size_t *written);
+
+/**
+ * Set the musig2 participant pubkeys map in an input.
+ *
+ * :param input: The input to update.
+ * :param map_in: Map of agg pubkey to participant pubkeys entries.
+ */
+WALLY_CORE_API int wally_psbt_input_set_musig2_pubkeys(
+    struct wally_psbt_input *input,
+    const struct wally_map *map_in);
 
 /**
  * Get the number of TAP_BIP32_DERIVATION entries in a PSBT input.
