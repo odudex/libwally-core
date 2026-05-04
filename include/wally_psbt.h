@@ -97,6 +97,8 @@ struct wally_psbt_input {
     struct wally_map taproot_leaf_hashes;
     struct wally_map taproot_leaf_paths;
     struct wally_map musig2_pubkeys;      /* BIP-373: agg pubkey -> participant pubkeys */
+    struct wally_map musig2_pubnonces;    /* BIP-373: (participant||agg[||leaf]) -> pubnonce */
+    struct wally_map musig2_partial_sigs; /* BIP-373: (participant||agg[||leaf]) -> partial_sig */
 #ifndef WALLY_ABI_NO_ELEMENTS
     uint64_t issuance_amount; /* Issuance amount, or 0 if not given */
     uint64_t inflation_keys; /* Number of reissuance tokens, or 0 if none given */
@@ -474,12 +476,124 @@ WALLY_CORE_API int wally_psbt_input_set_musig2_pubkeys(
     const struct wally_map *map_in);
 
 /**
+ * Add a MuSig2 pubnonce to an input.
+ *
+ * :param input: The input to update.
+ * :param participant: The participant's compressed public key (33 bytes).
+ * :param participant_len: Length of ``participant``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param agg_pubkey: The aggregate public key (33 bytes).
+ * :param agg_pubkey_len: Length of ``agg_pubkey``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param leaf_hash: The tapscript leaf hash (32 bytes) or NULL for key-path.
+ * :param leaf_hash_len: Length of ``leaf_hash``. Must be `SHA256_LEN` or 0.
+ * :param pubnonce: The 66-byte serialized pubnonce.
+ * :param pubnonce_len: Length of ``pubnonce``. Must be `WALLY_MUSIG_PUBNONCE_LEN`.
+ */
+WALLY_CORE_API int wally_psbt_input_add_musig2_pubnonce(
+    struct wally_psbt_input *input,
+    const unsigned char *participant,
+    size_t participant_len,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    const unsigned char *leaf_hash,
+    size_t leaf_hash_len,
+    const unsigned char *pubnonce,
+    size_t pubnonce_len);
+
+/**
+ * Find a MuSig2 pubnonce in an input.
+ *
+ * :param input: The input to search in.
+ * :param participant: The participant's compressed public key (33 bytes).
+ * :param participant_len: Length of ``participant``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param agg_pubkey: The aggregate public key (33 bytes).
+ * :param agg_pubkey_len: Length of ``agg_pubkey``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param leaf_hash: The tapscript leaf hash (32 bytes) or NULL for key-path.
+ * :param leaf_hash_len: Length of ``leaf_hash``. Must be `SHA256_LEN` or 0.
+ * :param written: On success, set to zero if not found, otherwise the 1-based index.
+ */
+WALLY_CORE_API int wally_psbt_input_find_musig2_pubnonce(
+    const struct wally_psbt_input *input,
+    const unsigned char *participant,
+    size_t participant_len,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    const unsigned char *leaf_hash,
+    size_t leaf_hash_len,
+    size_t *written);
+
+/**
+ * Get the number of MuSig2 pubnonces in an input.
+ *
+ * :param input: The input to query.
+ * :param written: On success, set to the number of pubnonce entries.
+ */
+WALLY_CORE_API int wally_psbt_input_get_musig2_pubnonce_count(
+    const struct wally_psbt_input *input,
+    size_t *written);
+
+/**
  * Get the number of TAP_BIP32_DERIVATION entries in a PSBT input.
  *
  * :param input: The input to query.
  * :param written: Destination for the count.
  */
 WALLY_CORE_API int wally_psbt_input_get_taproot_keypaths_size(
+    const struct wally_psbt_input *input,
+    size_t *written);
+
+/**
+ * Add a MuSig2 partial signature to an input.
+ *
+ * :param input: The input to update.
+ * :param participant: The participant's compressed public key (33 bytes).
+ * :param participant_len: Length of ``participant``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param agg_pubkey: The aggregate public key (33 bytes).
+ * :param agg_pubkey_len: Length of ``agg_pubkey``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param leaf_hash: The tapscript leaf hash (32 bytes) or NULL for key-path.
+ * :param leaf_hash_len: Length of ``leaf_hash``. Must be `SHA256_LEN` or 0.
+ * :param partial_sig: The 32-byte partial signature.
+ * :param partial_sig_len: Length of ``partial_sig``. Must be `WALLY_MUSIG_PARTIAL_SIG_LEN`.
+ */
+WALLY_CORE_API int wally_psbt_input_add_musig2_partial_sig(
+    struct wally_psbt_input *input,
+    const unsigned char *participant,
+    size_t participant_len,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    const unsigned char *leaf_hash,
+    size_t leaf_hash_len,
+    const unsigned char *partial_sig,
+    size_t partial_sig_len);
+
+/**
+ * Find a MuSig2 partial signature in an input.
+ *
+ * :param input: The input to search in.
+ * :param participant: The participant's compressed public key (33 bytes).
+ * :param participant_len: Length of ``participant``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param agg_pubkey: The aggregate public key (33 bytes).
+ * :param agg_pubkey_len: Length of ``agg_pubkey``. Must be `EC_PUBLIC_KEY_LEN`.
+ * :param leaf_hash: The tapscript leaf hash (32 bytes) or NULL for key-path.
+ * :param leaf_hash_len: Length of ``leaf_hash``. Must be `SHA256_LEN` or 0.
+ * :param written: On success, set to zero if not found, otherwise the 1-based index.
+ */
+WALLY_CORE_API int wally_psbt_input_find_musig2_partial_sig(
+    const struct wally_psbt_input *input,
+    const unsigned char *participant,
+    size_t participant_len,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    const unsigned char *leaf_hash,
+    size_t leaf_hash_len,
+    size_t *written);
+
+/**
+ * Get the number of MuSig2 partial signatures in an input.
+ *
+ * :param input: The input to query.
+ * :param written: On success, set to the number of partial signature entries.
+ */
+WALLY_CORE_API int wally_psbt_input_get_musig2_partial_sig_count(
     const struct wally_psbt_input *input,
     size_t *written);
 

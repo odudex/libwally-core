@@ -1,6 +1,7 @@
 #include "internal.h"
 
 #include <include/wally_elements.h>
+#include <include/wally_musig.h>
 #include <include/wally_script.h>
 #include <include/wally_psbt.h>
 #include <include/wally_psbt_members.h>
@@ -412,6 +413,134 @@ int wally_psbt_input_add_musig2_participant_pubkeys(struct wally_psbt_input *inp
                              agg_pubkey, agg_pubkey_len,
                              participants, participants_len);
 }
+static int musig2_composite_key_build(const unsigned char *participant,
+                                      const unsigned char *agg_pubkey,
+                                      const unsigned char *leaf_hash,
+                                      unsigned char *key_out, size_t *key_len_out)
+{
+    size_t key_len = EC_PUBLIC_KEY_LEN * 2 + (leaf_hash ? SHA256_LEN : 0);
+    memcpy(key_out, participant, EC_PUBLIC_KEY_LEN);
+    memcpy(key_out + EC_PUBLIC_KEY_LEN, agg_pubkey, EC_PUBLIC_KEY_LEN);
+    if (leaf_hash)
+        memcpy(key_out + EC_PUBLIC_KEY_LEN * 2, leaf_hash, SHA256_LEN);
+    *key_len_out = key_len;
+    return WALLY_OK;
+}
+
+int wally_psbt_input_add_musig2_pubnonce(struct wally_psbt_input *input,
+                                         const unsigned char *participant,
+                                         size_t participant_len,
+                                         const unsigned char *agg_pubkey,
+                                         size_t agg_pubkey_len,
+                                         const unsigned char *leaf_hash,
+                                         size_t leaf_hash_len,
+                                         const unsigned char *pubnonce,
+                                         size_t pubnonce_len)
+{
+    unsigned char key[EC_PUBLIC_KEY_LEN * 2 + SHA256_LEN];
+    size_t key_len;
+
+    if (!input ||
+        !participant || participant_len != EC_PUBLIC_KEY_LEN ||
+        !agg_pubkey || agg_pubkey_len != EC_PUBLIC_KEY_LEN ||
+        (leaf_hash && leaf_hash_len != SHA256_LEN) ||
+        (!leaf_hash && leaf_hash_len != 0) ||
+        !pubnonce || pubnonce_len != WALLY_MUSIG_PUBNONCE_LEN)
+        return WALLY_EINVAL;
+
+    musig2_composite_key_build(participant, agg_pubkey, leaf_hash, key, &key_len);
+    return wally_map_replace(&input->musig2_pubnonces, key, key_len, pubnonce, pubnonce_len);
+}
+
+int wally_psbt_input_find_musig2_pubnonce(const struct wally_psbt_input *input,
+                                          const unsigned char *participant,
+                                          size_t participant_len,
+                                          const unsigned char *agg_pubkey,
+                                          size_t agg_pubkey_len,
+                                          const unsigned char *leaf_hash,
+                                          size_t leaf_hash_len,
+                                          size_t *written)
+{
+    unsigned char key[EC_PUBLIC_KEY_LEN * 2 + SHA256_LEN];
+    size_t key_len;
+
+    if (!input || !written ||
+        !participant || participant_len != EC_PUBLIC_KEY_LEN ||
+        !agg_pubkey || agg_pubkey_len != EC_PUBLIC_KEY_LEN ||
+        (leaf_hash && leaf_hash_len != SHA256_LEN) ||
+        (!leaf_hash && leaf_hash_len != 0))
+        return WALLY_EINVAL;
+
+    musig2_composite_key_build(participant, agg_pubkey, leaf_hash, key, &key_len);
+    return wally_map_find(&input->musig2_pubnonces, key, key_len, written);
+}
+
+int wally_psbt_input_get_musig2_pubnonce_count(const struct wally_psbt_input *input,
+                                               size_t *written)
+{
+    if (!input || !written)
+        return WALLY_EINVAL;
+    *written = input->musig2_pubnonces.num_items;
+    return WALLY_OK;
+}
+
+int wally_psbt_input_add_musig2_partial_sig(struct wally_psbt_input *input,
+                                            const unsigned char *participant,
+                                            size_t participant_len,
+                                            const unsigned char *agg_pubkey,
+                                            size_t agg_pubkey_len,
+                                            const unsigned char *leaf_hash,
+                                            size_t leaf_hash_len,
+                                            const unsigned char *partial_sig,
+                                            size_t partial_sig_len)
+{
+    unsigned char key[EC_PUBLIC_KEY_LEN * 2 + SHA256_LEN];
+    size_t key_len;
+
+    if (!input ||
+        !participant || participant_len != EC_PUBLIC_KEY_LEN ||
+        !agg_pubkey || agg_pubkey_len != EC_PUBLIC_KEY_LEN ||
+        (leaf_hash && leaf_hash_len != SHA256_LEN) ||
+        (!leaf_hash && leaf_hash_len != 0) ||
+        !partial_sig || partial_sig_len != WALLY_MUSIG_PARTIAL_SIG_LEN)
+        return WALLY_EINVAL;
+
+    musig2_composite_key_build(participant, agg_pubkey, leaf_hash, key, &key_len);
+    return wally_map_replace(&input->musig2_partial_sigs, key, key_len, partial_sig, partial_sig_len);
+}
+
+int wally_psbt_input_find_musig2_partial_sig(const struct wally_psbt_input *input,
+                                             const unsigned char *participant,
+                                             size_t participant_len,
+                                             const unsigned char *agg_pubkey,
+                                             size_t agg_pubkey_len,
+                                             const unsigned char *leaf_hash,
+                                             size_t leaf_hash_len,
+                                             size_t *written)
+{
+    unsigned char key[EC_PUBLIC_KEY_LEN * 2 + SHA256_LEN];
+    size_t key_len;
+
+    if (!input || !written ||
+        !participant || participant_len != EC_PUBLIC_KEY_LEN ||
+        !agg_pubkey || agg_pubkey_len != EC_PUBLIC_KEY_LEN ||
+        (leaf_hash && leaf_hash_len != SHA256_LEN) ||
+        (!leaf_hash && leaf_hash_len != 0))
+        return WALLY_EINVAL;
+
+    musig2_composite_key_build(participant, agg_pubkey, leaf_hash, key, &key_len);
+    return wally_map_find(&input->musig2_partial_sigs, key, key_len, written);
+}
+
+int wally_psbt_input_get_musig2_partial_sig_count(const struct wally_psbt_input *input,
+                                                  size_t *written)
+{
+    if (!input || !written)
+        return WALLY_EINVAL;
+    *written = input->musig2_partial_sigs.num_items;
+    return WALLY_OK;
+}
+
 SET_MAP(wally_psbt_input, signature, _internal)
 int wally_psbt_input_add_signature(struct wally_psbt_input *input,
                                    const unsigned char *pub_key, size_t pub_key_len,
@@ -581,6 +710,33 @@ static int musig2_participant_pubkeys_verify(const unsigned char *key, size_t ke
     if (!val || val_len < EC_PUBLIC_KEY_LEN * 2 || val_len % EC_PUBLIC_KEY_LEN)
         return WALLY_EINVAL;
     return WALLY_OK;
+}
+
+static int musig2_composite_key_verify(const unsigned char *key, size_t key_len,
+                                       const unsigned char *val, size_t val_len,
+                                       size_t expected_val_len)
+{
+    /* Key: participant (33) + agg (33) + optional leaf_hash (32) */
+    if (!key || (key_len != EC_PUBLIC_KEY_LEN * 2 &&
+                 key_len != EC_PUBLIC_KEY_LEN * 2 + SHA256_LEN))
+        return WALLY_EINVAL;
+    if (!val || val_len != expected_val_len)
+        return WALLY_EINVAL;
+    return WALLY_OK;
+}
+
+static int musig2_pubnonce_verify(const unsigned char *key, size_t key_len,
+                                  const unsigned char *val, size_t val_len)
+{
+    return musig2_composite_key_verify(key, key_len, val, val_len,
+                                       WALLY_MUSIG_PUBNONCE_LEN);
+}
+
+static int musig2_partial_sig_verify(const unsigned char *key, size_t key_len,
+                                     const unsigned char *val, size_t val_len)
+{
+    return musig2_composite_key_verify(key, key_len, val, val_len,
+                                       WALLY_MUSIG_PARTIAL_SIG_LEN);
 }
 
 static int psbt_map_input_field_verify(const unsigned char *key, size_t key_len,
@@ -866,6 +1022,8 @@ static void psbt_input_init(struct wally_psbt_input *input)
     wally_map_init(0, map_leaf_hashes_verify, &input->taproot_leaf_hashes);
     wally_map_init(0, wally_keypath_xonly_public_key_verify, &input->taproot_leaf_paths);
     wally_map_init(0, musig2_participant_pubkeys_verify, &input->musig2_pubkeys);
+    wally_map_init(0, musig2_pubnonce_verify, &input->musig2_pubnonces);
+    wally_map_init(0, musig2_partial_sig_verify, &input->musig2_partial_sigs);
 #ifdef BUILD_ELEMENTS
     wally_map_init(0, pset_map_input_field_verify, &input->pset_fields);
 #endif /* BUILD_ELEMENTS */
@@ -887,6 +1045,8 @@ static int psbt_input_free(struct wally_psbt_input *input, bool free_parent)
         wally_map_clear(&input->taproot_leaf_hashes);
         wally_map_clear(&input->taproot_leaf_paths);
         wally_map_clear(&input->musig2_pubkeys);
+        wally_map_clear(&input->musig2_pubnonces);
+        wally_map_clear(&input->musig2_partial_sigs);
 #ifdef BUILD_ELEMENTS
         wally_tx_free(input->pegin_tx);
         wally_tx_witness_stack_free(input->pegin_witness);
@@ -2509,6 +2669,12 @@ static int pull_psbt_input(const struct wally_psbt *psbt,
             case PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS:
                 ret = pull_map_item(cursor, max, key, key_len, &result->musig2_pubkeys);
                 break;
+            case PSBT_IN_MUSIG2_PUB_NONCE:
+                ret = pull_map_item(cursor, max, key, key_len, &result->musig2_pubnonces);
+                break;
+            case PSBT_IN_MUSIG2_PARTIAL_SIG:
+                ret = pull_map_item(cursor, max, key, key_len, &result->musig2_partial_sigs);
+                break;
 #ifdef BUILD_ELEMENTS
             case PSET_FT(PSET_IN_EXPLICIT_VALUE):
                 ret = wally_psbt_input_set_amount(result, pull_le64_subfield(cursor, max));
@@ -3314,6 +3480,10 @@ static int push_psbt_input(const struct wally_psbt *psbt,
 
     push_psbt_map(cursor, max, PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS, false,
                   &input->musig2_pubkeys);
+    push_psbt_map(cursor, max, PSBT_IN_MUSIG2_PUB_NONCE, false,
+                  &input->musig2_pubnonces);
+    push_psbt_map(cursor, max, PSBT_IN_MUSIG2_PARTIAL_SIG, false,
+                  &input->musig2_partial_sigs);
 
 #ifdef BUILD_ELEMENTS
     if (is_pset && psbt->version == PSBT_2) {
@@ -3779,6 +3949,10 @@ static int combine_input(struct wally_psbt_input *dst,
     }
     if (ret == WALLY_OK)
         ret = wally_map_combine(&dst->musig2_pubkeys, &src->musig2_pubkeys);
+    if (ret == WALLY_OK)
+        ret = wally_map_combine(&dst->musig2_pubnonces, &src->musig2_pubnonces);
+    if (ret == WALLY_OK)
+        ret = wally_map_combine(&dst->musig2_partial_sigs, &src->musig2_partial_sigs);
     if (ret == WALLY_OK && is_pset) {
 #ifdef BUILD_ELEMENTS
         uint32_t ft;
@@ -3994,6 +4168,10 @@ static int psbt_combine_sigs(struct wally_psbt *psbt, const struct wally_psbt *s
         if (ret == WALLY_OK)
             ret = combine_map_if_empty(&dst_p->taproot_leaf_signatures,
                                        &src_p->taproot_leaf_signatures);
+        if (ret == WALLY_OK)
+            ret = wally_map_combine(&dst_p->musig2_pubnonces, &src_p->musig2_pubnonces);
+        if (ret == WALLY_OK)
+            ret = wally_map_combine(&dst_p->musig2_partial_sigs, &src_p->musig2_partial_sigs);
     }
     return ret;
 }
