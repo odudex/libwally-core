@@ -17,6 +17,7 @@ struct wally_musig_keyagg_cache;
 struct wally_musig_secnonce;
 struct wally_musig_partial_sig;
 
+
 /* PSBT Version number */
 #define WALLY_PSBT_VERSION_0 0x0
 #define WALLY_PSBT_VERSION_2 0x2
@@ -3073,6 +3074,125 @@ WALLY_CORE_API int wally_psbt_populate_musig2_from_descriptor(
     struct wally_psbt *psbt,
     const struct wally_descriptor *descriptor,
     uint32_t child_num,
+    uint32_t flags);
+
+/**
+ * Generate a MuSig2 nonce for a PSBT input and store it in the PSBT.
+ *
+ * Computes the input sighash (when available) and uses it as the message in
+ * nonce generation (per BIP-327). The resulting public nonce is stored in the
+ * PSBT under the composite key ``participant || agg_pubkey [|| leaf_hash]``.
+ * The secret nonce is returned to the caller, who MUST store it securely and
+ * supply it during Round 2 partial signing. The secret nonce MUST NOT be used
+ * more than once.
+ *
+ * Returns WALLY_ERROR if a pubnonce already exists for this participant/key
+ * combination (nonce reuse prevention).
+ *
+ * :param psbt: The PSBT to generate a nonce for.
+ * :param index: The zero-based index of the input to generate a nonce for.
+ * :param session_secrand32: 32 bytes of cryptographically secure random data.
+ *|    This value MUST NOT be reused across signing sessions.
+ * :param session_secrand_len: Length of ``session_secrand32``. Must be 32.
+ * :param seckey: The signer's 32-byte private key (optional, improves security).
+ * :param seckey_len: Length of ``seckey``. Must be ``EC_PRIVATE_KEY_LEN`` or 0.
+ * :param pubkey33: The signer's 33-byte compressed public key (participant key).
+ * :param pubkey33_len: Length of ``pubkey33``. Must be ``EC_PUBLIC_KEY_LEN``.
+ * :param agg_pubkey: The 33-byte aggregate public key for this musig() group.
+ * :param agg_pubkey_len: Length of ``agg_pubkey``. Must be ``EC_PUBLIC_KEY_LEN``.
+ * :param leaf_hash: Optional 32-byte tapscript leaf hash for script-path spends.
+ * :param leaf_hash_len: Length of ``leaf_hash``. Must be ``SHA256_LEN`` or 0.
+ * :param keyagg_cache: Optional keyagg cache for this musig() group.
+ * :param flags: For future use, pass 0.
+ * :param secnonce_out: Destination for the secret nonce. The caller owns this
+ *|    and must free it with `wally_musig_secnonce_free`. MUST NOT be reused.
+ */
+WALLY_CORE_API int wally_psbt_musig2_add_nonce(
+    struct wally_psbt *psbt,
+    size_t index,
+    const unsigned char *session_secrand32,
+    size_t session_secrand_len,
+    const unsigned char *seckey,
+    size_t seckey_len,
+    const unsigned char *pubkey33,
+    size_t pubkey33_len,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    const unsigned char *leaf_hash,
+    size_t leaf_hash_len,
+    const struct wally_musig_keyagg_cache *keyagg_cache,
+    uint32_t flags,
+    struct wally_musig_secnonce **secnonce_out);
+
+/**
+ * Produce a MuSig2 partial signature for a PSBT input (Round 2).
+ *
+ * Collects all public nonces for the given musig() group from the PSBT,
+ * aggregates them, processes the signing session with the input sighash,
+ * and produces a partial signature. The partial signature is stored in the
+ * PSBT under the composite key ``participant || agg_pubkey [|| leaf_hash]``.
+ * The secret nonce is zeroed after use (nonce reuse prevention).
+ *
+ * Returns ``WALLY_ERROR`` if any participant's pubnonce is missing.
+ *
+ * :param psbt: The PSBT to sign.
+ * :param index: The zero-based index of the input to sign.
+ * :param secnonce: The secret nonce from Round 1. Zeroed after use.
+ * :param seckey: The signer's 32-byte private key.
+ * :param seckey_len: Length of ``seckey``. Must be ``EC_PRIVATE_KEY_LEN``.
+ * :param pubkey33: The signer's 33-byte compressed public key (participant key).
+ * :param pubkey33_len: Length of ``pubkey33``. Must be ``EC_PUBLIC_KEY_LEN``.
+ * :param agg_pubkey: The 33-byte aggregate public key for this musig() group.
+ * :param agg_pubkey_len: Length of ``agg_pubkey``. Must be ``EC_PUBLIC_KEY_LEN``.
+ * :param leaf_hash: Optional 32-byte tapscript leaf hash for script-path spends.
+ * :param leaf_hash_len: Length of ``leaf_hash``. Must be ``SHA256_LEN`` or 0.
+ * :param keyagg_cache: The keyagg cache for this musig() group (with tweaks applied).
+ * :param flags: For future use, pass 0.
+ * :param partial_sig_out: Optional destination for the partial signature. The caller
+ *|    owns this and must free it with `wally_musig_partial_sig_free`. Pass NULL
+ *|    if not needed (the sig is always stored in the PSBT).
+ */
+WALLY_CORE_API int wally_psbt_musig2_sign(
+    struct wally_psbt *psbt,
+    size_t index,
+    struct wally_musig_secnonce *secnonce,
+    const unsigned char *seckey,
+    size_t seckey_len,
+    const unsigned char *pubkey33,
+    size_t pubkey33_len,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    const unsigned char *leaf_hash,
+    size_t leaf_hash_len,
+    const struct wally_musig_keyagg_cache *keyagg_cache,
+    uint32_t flags,
+    struct wally_musig_partial_sig **partial_sig_out);
+
+/**
+ * Aggregate MuSig2 partial signatures for one input and store the result
+ * as PSBT_IN_TAP_KEY_SIG (keypath spend) or in taproot_leaf_signatures
+ * (script path spend, when leaf_hash is non-NULL).
+ *
+ * MUST be called before wally_psbt_finalize_input(), and only after all
+ * participants have added their partial signatures via wally_psbt_musig2_sign().
+ *
+ * :param psbt: The PSBT containing the input.
+ * :param index: The input index.
+ * :param agg_pubkey: 33-byte compressed aggregate public key.
+ * :param agg_pubkey_len: Must be EC_PUBLIC_KEY_LEN (33).
+ * :param leaf_hash: Optional 32-byte tapleaf hash (NULL for keypath spend).
+ * :param leaf_hash_len: Must be SHA256_LEN if leaf_hash is non-NULL, 0 otherwise.
+ * :param keyagg_cache: The keyagg_cache used during signing (with tweaks applied).
+ * :param flags: Must be 0.
+ */
+WALLY_CORE_API int wally_psbt_musig2_finalize_input(
+    struct wally_psbt *psbt,
+    size_t index,
+    const unsigned char *agg_pubkey,
+    size_t agg_pubkey_len,
+    const unsigned char *leaf_hash,
+    size_t leaf_hash_len,
+    const struct wally_musig_keyagg_cache *keyagg_cache,
     uint32_t flags);
 
 #ifdef __cplusplus
