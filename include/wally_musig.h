@@ -284,6 +284,69 @@ WALLY_CORE_API int wally_musig_pubkey_xonly_tweak_add(
     unsigned char *pub_key_out,
     size_t pub_key_out_len);
 
+/**
+ * Construct a BIP-32 synthetic extended public key from a MuSig2 aggregate
+ * x-only public key, as specified by BIP-328.
+ *
+ * The chain code is the fixed constant SHA256("MuSig2MuSig2MuSig2"). The
+ * resulting ext_key has depth=0, child_num=0, and no parent fingerprint.
+ * Unhardened BIP-32 derivation (bip32_key_from_parent with
+ * BIP32_FLAG_KEY_PUBLIC) is supported on the output key. Hardened derivation
+ * is not possible (no private key).
+ *
+ * :param agg_pk: 32-byte x-only aggregate public key from wally_musig_pubkey_agg.
+ * :param agg_pk_len: Must be EC_XONLY_PUBLIC_KEY_LEN (32).
+ * :param version: BIP-32 version code. Use BIP32_VER_MAIN_PUBLIC or
+ *                 BIP32_VER_TEST_PUBLIC.
+ * :param output: Destination for the allocated ext_key.
+ */
+WALLY_CORE_API int wally_musig_pubkey_to_xpub(
+    const unsigned char *agg_pk,
+    size_t agg_pk_len,
+    uint32_t version,
+    struct ext_key **output);
+
+/**
+ * Derive child key from each xpub at child_num, sort derived pubkeys
+ * lexicographically (BIP-390), then aggregate.
+ *
+ * :param xpubs: Concatenated 78-byte serialized BIP-32 extended public keys.
+ * :param xpubs_len: Length of xpubs in bytes. Must be a multiple of
+ *|    BIP32_SERIALIZED_LEN and at least 2 * BIP32_SERIALIZED_LEN.
+ * :param child_num: Unhardened child index to derive (< BIP32_INITIAL_HARDENED_CHILD).
+ * :param agg_pk_out: Destination for the 32-byte x-only aggregate pubkey, or NULL.
+ * FIXED_SIZED_OUTPUT(agg_pk_out_len, agg_pk_out, EC_XONLY_PUBLIC_KEY_LEN)
+ * :param cache_out: Destination for the allocated keyagg_cache, or NULL.
+ */
+WALLY_CORE_API int wally_musig_pubkeys_derive_then_agg(
+    const unsigned char *xpubs,
+    size_t xpubs_len,
+    uint32_t child_num,
+    unsigned char *agg_pk_out,
+    size_t agg_pk_out_len,
+    struct wally_musig_keyagg_cache **cache_out);
+
+/**
+ * Aggregate N pubkeys, construct BIP-328 synthetic xpub, then derive child_num.
+ *
+ * :param pub_keys: Concatenated 33-byte compressed public keys.
+ * :param pub_keys_len: Length of pub_keys. Must be a multiple of EC_PUBLIC_KEY_LEN
+ *|    and at least 2 * EC_PUBLIC_KEY_LEN.
+ * :param version: BIP32_VER_MAIN_PUBLIC or BIP32_VER_TEST_PUBLIC.
+ * :param child_num: Unhardened child index to derive.
+ * :param pub_key_out: Destination for the 33-byte compressed child pubkey, or NULL.
+ * FIXED_SIZED_OUTPUT(pub_key_out_len, pub_key_out, EC_PUBLIC_KEY_LEN)
+ * :param child_out: Destination for the allocated child ext_key, or NULL.
+ */
+WALLY_CORE_API int wally_musig_pubkeys_agg_then_derive(
+    const unsigned char *pub_keys,
+    size_t pub_keys_len,
+    uint32_t version,
+    uint32_t child_num,
+    unsigned char *pub_key_out,
+    size_t pub_key_out_len,
+    struct ext_key **child_out);
+
 /* --- Nonce generation and aggregation functions --- */
 
 /**

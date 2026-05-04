@@ -864,4 +864,169 @@ cleanup:
     return ret;
 }
 
+WALLY_CORE_API int wally_musig_pubkey_to_xpub(
+    const unsigned char *agg_pk,
+    size_t agg_pk_len,
+    uint32_t version,
+    struct ext_key **output)
+{
+    unsigned char compressed_pk[EC_PUBLIC_KEY_LEN]; /* 33 bytes: 0x02 prefix + 32-byte x */
+    int ret;
+
+    if (!agg_pk || agg_pk_len != EC_XONLY_PUBLIC_KEY_LEN || !output)
+        return WALLY_EINVAL;
+    if (version != BIP32_VER_MAIN_PUBLIC && version != BIP32_VER_TEST_PUBLIC)
+        return WALLY_EINVAL;
+    *output = NULL;
+
+    /* Convert x-only (32-byte) aggregate pubkey to compressed (33-byte) form.
+     * BIP-340: x-only keys are treated as having even parity (0x02 prefix). */
+    compressed_pk[0] = 0x02;
+    memcpy(compressed_pk + 1, agg_pk, EC_XONLY_PUBLIC_KEY_LEN);
+
+    /* Construct ext_key at depth 0 with no parent, using fixed BIP-328 chain code */
+    ret = bip32_key_init_alloc(
+        version,
+        0,                                            /* depth */
+        0,                                            /* child_num */
+        MUSIG2_CHAINCODE, WALLY_MUSIG2_CHAINCODE_LEN,
+        compressed_pk, EC_PUBLIC_KEY_LEN,
+        NULL, 0,                                      /* no private key */
+        NULL, 0,                                      /* hash160: computed from pub_key */
+        NULL, 0,                                      /* parent160: zeros for root key */
+        output);
+
+    wally_clear(compressed_pk, sizeof(compressed_pk));
+    return ret;
+}
+
+WALLY_CORE_API int wally_musig_pubkeys_derive_then_agg(
+    const unsigned char *xpubs,
+    size_t xpubs_len,
+    uint32_t child_num,
+    unsigned char *agg_pk_out,
+    size_t agg_pk_out_len,
+    struct wally_musig_keyagg_cache **cache_out)
+{
+    unsigned char *sorted_pubkeys = NULL;
+    struct ext_key *hdkey = NULL;
+    struct ext_key *child = NULL;
+    size_t n_xpubs, i;
+    int ret = WALLY_EINVAL;
+
+    if (!xpubs || xpubs_len < 2 * BIP32_SERIALIZED_LEN ||
+        xpubs_len % BIP32_SERIALIZED_LEN != 0)
+        return WALLY_EINVAL;
+    if (child_num >= BIP32_INITIAL_HARDENED_CHILD)
+        return WALLY_EINVAL;
+    if (agg_pk_out && agg_pk_out_len != EC_XONLY_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+    if (!agg_pk_out && !cache_out)
+        return WALLY_EINVAL;
+
+    n_xpubs = xpubs_len / BIP32_SERIALIZED_LEN;
+
+    sorted_pubkeys = wally_malloc(n_xpubs * EC_PUBLIC_KEY_LEN);
+    if (!sorted_pubkeys)
+        return WALLY_ENOMEM;
+
+    for (i = 0; i < n_xpubs; i++) {
+        ret = bip32_key_unserialize_alloc(xpubs + i * BIP32_SERIALIZED_LEN,
+                                          BIP32_SERIALIZED_LEN, &hdkey);
+        if (ret != WALLY_OK)
+            goto cleanup;
+
+        ret = bip32_key_from_parent_alloc(hdkey, child_num,
+                                          BIP32_FLAG_KEY_PUBLIC, &child);
+        bip32_key_free(hdkey);
+        hdkey = NULL;
+        if (ret != WALLY_OK)
+            goto cleanup;
+
+        memcpy(sorted_pubkeys + i * EC_PUBLIC_KEY_LEN,
+               child->pub_key, EC_PUBLIC_KEY_LEN);
+        bip32_key_free(child);
+        child = NULL;
+    }
+
+    qsort(sorted_pubkeys, n_xpubs, EC_PUBLIC_KEY_LEN, pubkey_cmp);
+
+    ret = wally_musig_pubkey_agg(sorted_pubkeys, n_xpubs * EC_PUBLIC_KEY_LEN,
+                                 agg_pk_out, agg_pk_out_len, cache_out);
+
+cleanup:
+    if (hdkey)
+        bip32_key_free(hdkey);
+    if (child)
+        bip32_key_free(child);
+    wally_free(sorted_pubkeys);
+    return ret;
+}
+
+WALLY_CORE_API int wally_musig_pubkeys_agg_then_derive(
+    const unsigned char *pub_keys,
+    size_t pub_keys_len,
+    uint32_t version,
+    uint32_t child_num,
+    unsigned char *pub_key_out,
+    size_t pub_key_out_len,
+    struct ext_key **child_out)
+{
+    unsigned char agg_pk[EC_XONLY_PUBLIC_KEY_LEN];
+    struct ext_key *synthetic_xpub = NULL;
+    struct ext_key *child = NULL;
+    unsigned char *sorted = NULL;
+    int ret;
+
+    if (!pub_keys || pub_keys_len < 2 * EC_PUBLIC_KEY_LEN ||
+        pub_keys_len % EC_PUBLIC_KEY_LEN != 0)
+        return WALLY_EINVAL;
+    if (version != BIP32_VER_MAIN_PUBLIC && version != BIP32_VER_TEST_PUBLIC)
+        return WALLY_EINVAL;
+    if (child_num >= BIP32_INITIAL_HARDENED_CHILD)
+        return WALLY_EINVAL;
+    if (!pub_key_out && !child_out)
+        return WALLY_EINVAL;
+    if (pub_key_out && pub_key_out_len != EC_PUBLIC_KEY_LEN)
+        return WALLY_EINVAL;
+
+    sorted = wally_malloc(pub_keys_len);
+    if (!sorted)
+        return WALLY_ENOMEM;
+    memcpy(sorted, pub_keys, pub_keys_len);
+    qsort(sorted, pub_keys_len / EC_PUBLIC_KEY_LEN, EC_PUBLIC_KEY_LEN, pubkey_cmp);
+
+    ret = wally_musig_pubkey_agg(sorted, pub_keys_len,
+                                 agg_pk, sizeof(agg_pk), NULL);
+    if (ret != WALLY_OK)
+        goto cleanup;
+
+    ret = wally_musig_pubkey_to_xpub(agg_pk, sizeof(agg_pk), version,
+                                     &synthetic_xpub);
+    if (ret != WALLY_OK)
+        goto cleanup;
+
+    ret = bip32_key_from_parent_alloc(synthetic_xpub, child_num,
+                                      BIP32_FLAG_KEY_PUBLIC, &child);
+    if (ret != WALLY_OK)
+        goto cleanup;
+
+    if (pub_key_out)
+        memcpy(pub_key_out, child->pub_key, EC_PUBLIC_KEY_LEN);
+
+    if (child_out) {
+        *child_out = child;
+        child = NULL;
+    }
+
+cleanup:
+    if (child)
+        bip32_key_free(child);
+    if (synthetic_xpub)
+        bip32_key_free(synthetic_xpub);
+    wally_free(sorted);
+    wally_clear(agg_pk, sizeof(agg_pk));
+    return ret;
+}
+
 #endif /* ndef BUILD_STANDARD_SECP */
