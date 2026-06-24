@@ -217,6 +217,43 @@ class MiniscriptSatisfierDiffTests(unittest.TestCase):
                 continue
             # Tapscript comparison would go here once golden has tap: entries.
 
+    def test_j_wrapper_dissatisfaction_regression(self):
+        """Regression for the j: (NON_ZERO) dissatisfaction fix.
+
+        A j:-wrapped fragment in a dissatisfiable position (here, the left arm of
+        or_d) must be dissatisfiable with a single empty push, so the other branch
+        can still be spent. The j: branch's timelocks are unsatisfiable here (the
+        spending input disables relative locktime and nLockTime is 0), so the
+        satisfier must dissatisfy it and sign the pk() branch. Previously j:
+        dissatisfaction was IMPOSSIBLE, which made this script unspendable
+        (finalization returned no witness)."""
+        pk = _PK_LIST[1].hex()  # a key the harness can sign with (sk = 0x02..)
+        ms = 'or_d(j:and_v(vdv:after(1567547623),older(16)),pk(%s))' % pk
+
+        d = c_void_p()
+        self.assertEqual(WALLY_OK,
+                         wally_descriptor_parse(ms, None, NETWORK_NONE, MS_ONLY, d),
+                         'failed to parse j: regression miniscript')
+        script, script_len = make_cbuffer('00' * 10000)
+        ret, written = wally_descriptor_to_script(d, 0, 0, 0, 0, 0, 0, script, script_len)
+        wally_descriptor_free(d)
+        self.assertEqual(WALLY_OK, ret, 'failed to compile j: regression miniscript')
+        script_bytes = bytes(script[:written])
+
+        psbt, idx = build_p2wsh_psbt(script_bytes, extra_pubkeys=[_PK_LIST[1]])
+        witness = finalize_and_extract_witness(psbt, idx)
+        wally_psbt_free(psbt)
+
+        self.assertIsNotNone(
+            witness,
+            'or_d(j:...,pk) must finalize: the j: branch must be dissatisfiable '
+            'so the pk() branch can be spent')
+        # Witness ends with the witness script; a signature (DER, >=64 raw bytes,
+        # i.e. >=128 hex chars) must be present for the spent pk() branch.
+        self.assertEqual(witness[-1], script_bytes.hex())
+        self.assertTrue(any(len(w) >= 128 for w in witness),
+                        'expected a signature in the finalized witness, got %r' % witness)
+
 
 if __name__ == '__main__':
     unittest.main()

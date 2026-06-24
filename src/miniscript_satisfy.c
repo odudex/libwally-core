@@ -1068,11 +1068,17 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
         }
 
         case KIND_MINISCRIPT_NON_ZERO: {
+            /* j:X = SIZE 0NOTEQUAL IF [X] ENDIF. Satisfied by X's satisfaction
+             * (whose top element is non-zero-length); dissatisfied by a single
+             * empty push (SIZE=0 -> false -> IF skipped). Mirrors DUP_IF's
+             * dissatisfaction. Previously this was set to IMPOSSIBLE, which made
+             * any fragment needing to dissatisfy a j:-wrapped child unsatisfiable. */
             sat_dissat_t child = result[--rsp];
             ms_satisfaction_free(&entry.sat);
             ms_satisfaction_free(&entry.dissat);
             ms_satisfaction_free(&child.dissat);
-            ms_satisfaction_init(&entry.dissat, MS_WITNESS_IMPOSSIBLE);
+            ms_satisfaction_init(&child.dissat, MS_WITNESS_STACK);
+            entry.dissat = satisfaction_push_item(child.dissat, NULL, 0);
             entry.sat = child.sat;
             break;
         }
