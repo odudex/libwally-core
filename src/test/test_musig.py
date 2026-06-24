@@ -902,9 +902,11 @@ class MuSig2Tests(unittest.TestCase):
         pk2 = derive_pubkey(SECKEY2)
         pub_keys_flat = pk1 + pk2
 
-        # Compute expected manually
+        # Compute expected manually. wally_musig_pubkeys_agg_then_derive sorts
+        # the keys before aggregation, so sort here to mirror it.
+        sorted_keys_flat = b''.join(sorted([pk1, pk2]))
         agg_pk, _ = make_cbuffer('00' * EC_XONLY_PUBLIC_KEY_LEN)
-        self.assertEqual(WALLY_OK, wally_musig_pubkey_agg(pub_keys_flat, len(pub_keys_flat),
+        self.assertEqual(WALLY_OK, wally_musig_pubkey_agg(sorted_keys_flat, len(sorted_keys_flat),
                                                           agg_pk, EC_XONLY_PUBLIC_KEY_LEN, None))
         synthetic_xpub = POINTER(ext_key)()
         self.assertEqual(WALLY_OK, wally_musig_pubkey_to_xpub(agg_pk, EC_XONLY_PUBLIC_KEY_LEN,
