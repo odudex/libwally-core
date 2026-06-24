@@ -63,11 +63,14 @@ def main():
     agg_pubkey_buf, _ = make_cbuffer(agg_pubkey.hex())
 
     # ── Step 2: Build PSBT with a P2TR input ─────────────────────────────────
-    # Build the P2TR scriptpubkey from the x-only aggregate key.
-    # wally_scriptpubkey_p2tr_from_bytes applies the BIP-341 tweak internally.
+    # Build the P2TR scriptpubkey. Passing the 33-byte COMPRESSED aggregate
+    # (internal) key makes wally apply the BIP-341 key-path output tweak, so the
+    # coin is locked to the standard taproot output key Q = P + H_TapTweak(P)*G
+    # (NOT the raw aggregate key P). The PSBT musig signing flow re-applies the
+    # same tweak internally so the aggregated signature is valid under Q.
     p2tr_buf, _ = make_cbuffer('00' * 34)
     ret, p2tr_written = wally_scriptpubkey_p2tr_from_bytes(
-        agg_pk_xonly, EC_XONLY_PUBLIC_KEY_LEN, 0, p2tr_buf, 34)
+        agg_pubkey, EC_PUBLIC_KEY_LEN, 0, p2tr_buf, 34)
     assert ret == WALLY_OK, 'P2TR scriptpubkey creation failed'
     p2tr_bytes = bytes(p2tr_buf[:p2tr_written])
 
@@ -111,8 +114,10 @@ def main():
     # Each signer independently generates a (secnonce, pubnonce) pair using a
     # unique session random value.  wally_psbt_musig2_add_nonce stores the
     # pubnonce in the PSBT and returns the secnonce to the caller.
-    secrand1, _ = make_cbuffer('a1' * 32)
-    secrand2, _ = make_cbuffer('a2' * 32)
+    # Each signer MUST use unique, cryptographically secure randomness here and
+    # MUST NOT reuse it across signing sessions (MuSig2 nonce reuse leaks the key).
+    secrand1, _ = make_cbuffer(os.urandom(32).hex())
+    secrand2, _ = make_cbuffer(os.urandom(32).hex())
     sn1 = c_void_p()
     sn2 = c_void_p()
 
