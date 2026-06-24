@@ -7799,6 +7799,69 @@ done:
     return ret;
 }
 
+/* For a key-path taproot MuSig2 spend the aggregated signature must verify
+ * against the BIP-341 tweaked output key Q = P + H_TapTweak(P, merkle_root)*G,
+ * not the internal aggregate key P. secp256k1 applies such an output tweak via
+ * the keyagg cache, so we sign with a tweaked *copy* of the caller's cache,
+ * leaving the caller's cache untouched. On success *out is the tweaked cache
+ * (caller must free) for the key-path case, or NULL for the script-path case
+ * (leaf_hash set), where the leaf script commits to the aggregate key directly
+ * and no output tweak is applied. */
+static int musig2_get_signing_cache(
+    const struct wally_psbt *psbt, size_t index,
+    const struct wally_musig_keyagg_cache *keyagg_cache,
+    const unsigned char *leaf_hash,
+    struct wally_musig_keyagg_cache **out)
+{
+    unsigned char cache_bytes[WALLY_MUSIG_KEYAGG_CACHE_LEN];
+    unsigned char agg_pk[EC_PUBLIC_KEY_LEN];
+    unsigned char tweak[SHA256_LEN];
+    unsigned char tweaked_pk[EC_PUBLIC_KEY_LEN];
+    const struct wally_map_item *mr;
+    const unsigned char *merkle_root;
+    struct wally_musig_keyagg_cache *copy = NULL;
+    uint32_t tweak_flags = 0;
+    int ret;
+
+    *out = NULL;
+    if (leaf_hash)
+        return WALLY_OK; /* Script-path: sign under the aggregate key, no output tweak */
+
+    mr = wally_map_get_integer(&psbt->inputs[index].psbt_fields,
+                               PSBT_IN_TAP_MERKLE_ROOT);
+    if (mr && mr->value_len != SHA256_LEN)
+        return WALLY_EINVAL;
+    merkle_root = mr ? mr->value : NULL;
+
+#ifdef BUILD_ELEMENTS
+    {
+        size_t is_pset = 0;
+        if (wally_psbt_is_elements(psbt, &is_pset) == WALLY_OK && is_pset)
+            tweak_flags = EC_FLAG_ELEMENTS;
+    }
+#endif
+
+    /* P = the aggregate (internal) key held in the cache */
+    ret = wally_musig_pubkey_get(keyagg_cache, agg_pk, sizeof(agg_pk));
+    if (ret == WALLY_OK)
+        ret = get_bip341_tweak(agg_pk, sizeof(agg_pk), merkle_root, tweak_flags,
+                               tweak, sizeof(tweak));
+    /* Copy the cache (serialize+parse) so the caller's cache is not mutated */
+    if (ret == WALLY_OK)
+        ret = wally_musig_keyagg_cache_serialize(keyagg_cache, cache_bytes,
+                                                 sizeof(cache_bytes));
+    if (ret == WALLY_OK)
+        ret = wally_musig_keyagg_cache_parse(cache_bytes, sizeof(cache_bytes), &copy);
+    if (ret == WALLY_OK)
+        ret = wally_musig_pubkey_xonly_tweak_add(copy, tweak, sizeof(tweak),
+                                                 tweaked_pk, sizeof(tweaked_pk));
+    if (ret == WALLY_OK)
+        *out = copy;
+    else
+        wally_musig_keyagg_cache_free(copy);
+    return ret;
+}
+
 int wally_psbt_musig2_sign(
     struct wally_psbt *psbt,
     size_t index,
@@ -7832,6 +7895,8 @@ int wally_psbt_musig2_sign(
     struct wally_musig_aggnonce *aggnonce = NULL;
     struct wally_musig_session *session = NULL;
     struct wally_musig_partial_sig *partial_sig = NULL;
+    struct wally_musig_keyagg_cache *signing_cache = NULL;
+    const struct wally_musig_keyagg_cache *use_cache;
     int ret;
 
     if (!psbt || index >= psbt->num_inputs)
@@ -7925,10 +7990,17 @@ int wally_psbt_musig2_sign(
     }
     ret = WALLY_OK;
 
+    /* For a key-path spend, sign with a BIP-341 output-tweaked copy of the cache
+     * so the aggregated signature is valid under the on-chain output key. */
+    ret = musig2_get_signing_cache(psbt, index, keyagg_cache, leaf_hash, &signing_cache);
+    if (ret != WALLY_OK)
+        goto done;
+    use_cache = signing_cache ? signing_cache : keyagg_cache;
+
     /* Process the aggregate nonce with the sighash to create a signing session */
     ret = wally_musig_nonce_process(aggnonce,
                                     msg32, msg_len,
-                                    keyagg_cache,
+                                    use_cache,
                                     NULL, 0,
                                     &session);
     if (ret != WALLY_OK)
@@ -7937,7 +8009,7 @@ int wally_psbt_musig2_sign(
     /* Produce the partial signature (secnonce is zeroed by this call) */
     ret = wally_musig_partial_sign(secnonce,
                                    seckey, seckey_len,
-                                   keyagg_cache,
+                                   use_cache,
                                    session,
                                    &partial_sig);
     if (ret != WALLY_OK)
@@ -7973,6 +8045,7 @@ done:
     }
     wally_musig_aggnonce_free(aggnonce);
     wally_musig_session_free(session);
+    wally_musig_keyagg_cache_free(signing_cache);
     if (partial_sig)
         wally_musig_partial_sig_free(partial_sig);
     wally_clear(sighash, sizeof(sighash));
@@ -8006,6 +8079,8 @@ int wally_psbt_musig2_finalize_input(
     struct wally_tx *tx = NULL;
     struct wally_musig_aggnonce *aggnonce = NULL;
     struct wally_musig_session *session = NULL;
+    struct wally_musig_keyagg_cache *signing_cache = NULL;
+    const struct wally_musig_keyagg_cache *use_cache;
     bool is_pset_local;
     int ret;
 
@@ -8082,10 +8157,17 @@ int wally_psbt_musig2_finalize_input(
     if (ret != WALLY_OK)
         goto done;
 
+    /* For a key-path spend, process with a BIP-341 output-tweaked copy of the
+     * cache so the aggregated signature is valid under the on-chain output key. */
+    ret = musig2_get_signing_cache(psbt, index, keyagg_cache, leaf_hash, &signing_cache);
+    if (ret != WALLY_OK)
+        goto done;
+    use_cache = signing_cache ? signing_cache : keyagg_cache;
+
     /* Process the aggregate nonce with the sighash to create a signing session */
     ret = wally_musig_nonce_process(aggnonce,
                                     sighash, sizeof(sighash),
-                                    keyagg_cache,
+                                    use_cache,
                                     NULL, 0,
                                     &session);
     if (ret != WALLY_OK)
@@ -8162,6 +8244,7 @@ done:
     }
     wally_musig_aggnonce_free(aggnonce);
     wally_musig_session_free(session);
+    wally_musig_keyagg_cache_free(signing_cache);
     wally_clear(sighash, sizeof(sighash));
     wally_clear(sig64, sizeof(sig64));
     wally_clear(sig65, sizeof(sig65));
