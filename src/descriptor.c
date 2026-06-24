@@ -3193,8 +3193,8 @@ static int parse_taptree_impl(ms_ctx *ctx, const char *str, size_t str_len,
     if (!str_len)
         return WALLY_EINVAL;
 
-    if (depth >= WALLY_DESCRIPTOR_TAPTREE_MAX_DEPTH)
-        return WALLY_EINVAL;
+    if (depth > WALLY_DESCRIPTOR_TAPTREE_MAX_DEPTH)
+        return WALLY_EINVAL; /* BIP-341 allows a merkle path of up to 128 (leaf at depth 128) */
 
     if (str[0] == '{') {
         /* Branch node: {LEFT, RIGHT} */
@@ -4693,7 +4693,7 @@ int wally_descriptor_get_taproot_control_block(
     unsigned char *path_buf = NULL;
     unsigned char merkle_root[SHA256_LEN];
     ms_node *taptree;
-    uint32_t path_len = 0;
+    uint32_t path_len = 0, tweak_flags;
     size_t pubkey_len = 0, cb_size;
     int ret;
 
@@ -4744,10 +4744,17 @@ int wally_descriptor_get_taproot_control_block(
     if (ret != WALLY_OK)
         goto cleanup;
 
-    /* Tweak to get parity bit */
+    /* Tweak to get parity bit. Use the same tweak tag as generate_tr() so the
+     * control block parity matches the scriptPubKey output key; for Elements
+     * descriptors this is the "TapTweak/elements" tag, not "TapTweak". */
+    tweak_flags = 0;
+#ifdef BUILD_ELEMENTS
+    if (descriptor->features & WALLY_MS_IS_ELEMENTS)
+        tweak_flags = EC_FLAG_ELEMENTS;
+#endif
     ret = wally_ec_public_key_bip341_tweak(pubkey + 1, EC_XONLY_PUBLIC_KEY_LEN,
                                            merkle_root, SHA256_LEN,
-                                           0, tweaked, sizeof(tweaked));
+                                           tweak_flags, tweaked, sizeof(tweaked));
     if (ret != WALLY_OK)
         goto cleanup;
 
