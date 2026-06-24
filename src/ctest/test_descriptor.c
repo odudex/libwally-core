@@ -1015,38 +1015,38 @@ static const struct descriptor_test {
         "c:pk_k(key_1)",
         WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
         "21038bc7431d9285a064b0328b6333f3a20b86664437b6de8f4e26e6bbdee258f048ac",
-        ""
+        "", VARS_STD
     },
     {
         "miniscript - pk_h segwit v0",
         "c:pk_h(key_1)",
         WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
         "76a914d0721279e70d39fb4aa409b52839a0056454e3b588ac",
-        ""
+        "", VARS_STD
     }, {
         "miniscript - sha256 segwit v0",
         "sha256(9267d3dbed802941483f1afa2a6bc68de5f653128aca9bf1461c5d0a3ad36ed2)",
         WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
         "82012088a8209267d3dbed802941483f1afa2a6bc68de5f653128aca9bf1461c5d0a3ad36ed287",
-        ""
+        "", VARS_STD
     }, {
         "miniscript - hash256 segwit v0",
         "hash256(131772552c01444cd81360818376a040b7c3b2b7b0a53550ee3edde216cec61b)",
         WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
         "82012088aa20131772552c01444cd81360818376a040b7c3b2b7b0a53550ee3edde216cec61b87",
-        ""
+        "", VARS_STD
     }, {
         "miniscript - ripemd160 segwit v0",
         "ripemd160(6ad07d21fd5dfc646f0b30577045ce201616b9ba)",
         WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
         "82012088a6146ad07d21fd5dfc646f0b30577045ce201616b9ba87",
-        ""
+        "", VARS_STD
     }, {
         "miniscript - hash160 segwit v0",
         "hash160(20195b5a3d650c17f0f29f91c33f8f6335193d07)",
         WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY,
         "82012088a91420195b5a3d650c17f0f29f91c33f8f6335193d0787",
-        ""
+        "", VARS_STD
     },
     /*
      * Miniscript taproot cases
@@ -1056,7 +1056,7 @@ static const struct descriptor_test {
         "c:pk_k(x_only)",
         WALLY_NETWORK_NONE, 0, 0, 0, NULL, WALLY_MINISCRIPT_ONLY | WALLY_MINISCRIPT_TAPSCRIPT,
         "20b71aa79cab0ae2d83b82d44cbdc23f5dcca3797e8ba622c4e45a8f7dce28ba0eac",
-        ""
+        "", VARS_STD
     }, {
         "miniscript - taproot raw pubkey",
         "c:pk_k(daed4f2be3a8bf278e70132fb0beb7522f570e144bf615c07e996d443dee8729)",
@@ -1492,43 +1492,43 @@ static const struct descriptor_test {
     },{
         "descriptor - tr - multi() fragment not allowed in tapscript",
         "tr(x_only,multi(2,key_1,key_2))",
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
         "descriptor - tr - single element in braces not allowed",
         "tr(x_only,{pk(key_1)})",
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
         "descriptor - tr - three elements in braces not allowed",
         "tr(x_only,{pk(key_1),pk(key_2),pk(key_3)})",
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
         "descriptor - tr - empty braces not allowed",
         "tr(x_only,{})",
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
         "descriptor - tr - wsh() inside tr not allowed",
         "tr(x_only,wsh(pk(key_1)))",
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
         "descriptor - tr - tr() inside tr not allowed",
         "tr(x_only,tr(key_1))",
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
         "descriptor - tr - wsh() inside taptree leaf not allowed",
         "tr(x_only,{wsh(pk(key_1)),pk(key_2)})",
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
         "descriptor - tr - tr() inside taptree leaf not allowed",
         "tr(x_only,{tr(key_1),pk(key_2)})",
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
         "descriptor - wsh - tr() inside wsh not allowed",
         "wsh(and_v(v:pk(key_1),tr(key_2)))",
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
         "descriptor - multi_a not allowed outside tapscript context",
         "wsh(multi_a(2,key_1,key_2))",
-        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, ""
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     },{
         "descriptor - after - non number child",
         "wsh(after(key_1))",
@@ -2666,7 +2666,7 @@ static bool test_taproot_miniscript(void)
     bool ok = true;
 
     /* --- tr(x_only, pk(key_1)) --- */
-    ret = wally_descriptor_parse("tr(x_only,pk(key_1))", &g_key_map,
+    ret = wally_descriptor_parse("tr(x_only,pk(key_1))", &g_vars[VARS_STD],
         WALLY_NETWORK_BITCOIN_MAINNET, 0, &desc);
     if (!check_ret("parse tr(x_only,pk(key_1))", ret, WALLY_OK)) { ok = false; goto done_single; }
 
@@ -2734,7 +2734,7 @@ done_single:
     wally_descriptor_free(desc); desc = NULL;
 
     /* --- tr(x_only, {pk(key_1), {pk(key_2), pk(key_3)}}) --- */
-    ret = wally_descriptor_parse("tr(x_only,{pk(key_1),{pk(key_2),pk(key_3)}})", &g_key_map,
+    ret = wally_descriptor_parse("tr(x_only,{pk(key_1),{pk(key_2),pk(key_3)}})", &g_vars[VARS_STD],
         WALLY_NETWORK_BITCOIN_MAINNET, 0, &desc);
     if (!check_ret("parse tr 3-leaf", ret, WALLY_OK)) { ok = false; goto done_3leaf; }
 
@@ -2796,7 +2796,7 @@ done_3leaf:
     wally_descriptor_free(desc); desc = NULL;
 
     /* --- tr(x_only) keypath-only --- */
-    ret = wally_descriptor_parse("tr(x_only)", &g_key_map,
+    ret = wally_descriptor_parse("tr(x_only)", &g_vars[VARS_STD],
         WALLY_NETWORK_BITCOIN_REGTEST, 0, &desc);
     if (!check_ret("parse tr(x_only) keypath-only", ret, WALLY_OK)) { ok = false; goto done_keypath; }
 
@@ -2813,7 +2813,7 @@ done_keypath:
     wally_descriptor_free(desc); desc = NULL;
 
     /* --- tr(x_only, multi_a(2, key_1, key_2, key_3)) leaf script vector --- */
-    ret = wally_descriptor_parse("tr(x_only,multi_a(2,key_1,key_2,key_3))", &g_key_map,
+    ret = wally_descriptor_parse("tr(x_only,multi_a(2,key_1,key_2,key_3))", &g_vars[VARS_STD],
         WALLY_NETWORK_BITCOIN_MAINNET, 0, &desc);
     if (!check_ret("parse tr(x_only,multi_a)", ret, WALLY_OK)) { ok = false; goto done_multia; }
 
@@ -2829,7 +2829,7 @@ done_multia:
     wally_descriptor_free(desc); desc = NULL;
 
     /* --- Canonicalization round-trip: parse -> canonicalize -> re-parse -> compare scriptPubKey --- */
-    ret = wally_descriptor_parse("tr(x_only,pk(key_1))", &g_key_map,
+    ret = wally_descriptor_parse("tr(x_only,pk(key_1))", &g_vars[VARS_STD],
         WALLY_NETWORK_BITCOIN_MAINNET, 0, &desc);
     if (!check_ret("canon: parse", ret, WALLY_OK)) { ok = false; goto done_canon; }
 
@@ -2911,7 +2911,7 @@ static bool test_psbt_taproot_scriptpath(void)
     bool ok = true;
 
     /* Parse tr(x_only,pk(key_1)) descriptor */
-    ret = wally_descriptor_parse("tr(x_only,pk(key_1))", &g_key_map,
+    ret = wally_descriptor_parse("tr(x_only,pk(key_1))", &g_vars[VARS_STD],
         WALLY_NETWORK_BITCOIN_MAINNET, 0, &desc);
     if (!check_ret("psbt: parse", ret, WALLY_OK)) { ok = false; goto done_psbt; }
 
