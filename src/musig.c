@@ -15,7 +15,7 @@ struct wally_musig_session       { unsigned char data[133]; };
 struct wally_musig_partial_sig   { unsigned char data[36];  };
 
 /* Comparison function for qsort: lexicographic order of 33-byte compressed pubkeys */
-static int pubkey_cmp(const void *a, const void *b)
+static int musig2_keyagg_pubkey_cmp(const void *a, const void *b)
 {
     return memcmp(a, b, EC_PUBLIC_KEY_LEN);
 }
@@ -949,7 +949,7 @@ WALLY_CORE_API int wally_musig_pubkeys_derive_then_agg(
         child = NULL;
     }
 
-    qsort(sorted_pubkeys, n_xpubs, EC_PUBLIC_KEY_LEN, pubkey_cmp);
+    qsort(sorted_pubkeys, n_xpubs, EC_PUBLIC_KEY_LEN, musig2_keyagg_pubkey_cmp);
 
     ret = wally_musig_pubkey_agg(sorted_pubkeys, n_xpubs * EC_PUBLIC_KEY_LEN,
                                  agg_pk_out, agg_pk_out_len, cache_out);
@@ -994,7 +994,7 @@ WALLY_CORE_API int wally_musig_pubkeys_agg_then_derive(
     if (!sorted)
         return WALLY_ENOMEM;
     memcpy(sorted, pub_keys, pub_keys_len);
-    qsort(sorted, pub_keys_len / EC_PUBLIC_KEY_LEN, EC_PUBLIC_KEY_LEN, pubkey_cmp);
+    qsort(sorted, pub_keys_len / EC_PUBLIC_KEY_LEN, EC_PUBLIC_KEY_LEN, musig2_keyagg_pubkey_cmp);
 
     ret = wally_musig_pubkey_agg(sorted, pub_keys_len,
                                  agg_pk, sizeof(agg_pk), NULL);

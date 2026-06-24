@@ -5,6 +5,7 @@
 #define ENABLE_MODULE_ECDH 1
 #define ENABLE_MODULE_EXTRAKEYS 1
 #define ENABLE_MODULE_SCHNORRSIG 1
+#define ENABLE_MODULE_MUSIG 1
 #define ENABLE_MODULE_GENERATOR 1
 #define ENABLE_MODULE_ECDSA_S2C 1
 #define ENABLE_MODULE_RECOVERY 1
@@ -68,7 +69,10 @@
 #include "src/hex_.c"
 #include "src/hmac.c"
 #include "src/map.c"
+#include "src/miniscript_decode.c"
+#include "src/miniscript_satisfy.c"
 #include "src/mnemonic.c"
+#include "src/musig.c"
 #include "src/pbkdf2.c"
 #include "src/pullpush.c"
 #include "src/psbt.c"
