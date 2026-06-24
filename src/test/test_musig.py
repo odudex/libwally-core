@@ -538,6 +538,11 @@ class MuSig2Tests(unittest.TestCase):
         pn_bad = c_void_p()
         self.assertEqual(WALLY_EINVAL, wally_musig_nonce_gen(None, 0, SECKEY1, 32, pk1, EC_PUBLIC_KEY_LEN,
                                                              None, None, 0, None, 0, sn_bad, pn_bad))
+        # all-zero session_secrand32 must be rejected (defense-in-depth: it must be
+        # unique and uniformly random; all-zero is the common uninitialized mistake)
+        zero_secrand = bytes(32)
+        self.assertEqual(WALLY_EINVAL, wally_musig_nonce_gen(zero_secrand, 32, SECKEY1, 32, pk1, EC_PUBLIC_KEY_LEN,
+                                                             None, None, 0, None, 0, sn_bad, pn_bad))
         # NULL pubkey
         session_id = bytes([0xff] * 32)
         self.assertEqual(WALLY_EINVAL, wally_musig_nonce_gen(session_id, 32, SECKEY1, 32, None, 0,
@@ -1096,11 +1101,14 @@ class MuSig2Tests(unittest.TestCase):
         agg_pubkey = bytes([0x02]) + bytes(agg_pk_xonly)
         agg_pubkey_buf, _ = make_cbuffer(agg_pubkey.hex())
 
-        # Build P2TR scriptpubkey from x-only internal key (no tapscript = keypath only)
-        # wally_scriptpubkey_p2tr_from_bytes applies the BIP-341 tweak internally
+        # Build a standard BIP-341 P2TR scriptpubkey. Pass the 33-byte COMPRESSED
+        # aggregate (internal) key so wally applies the key-path output tweak: the
+        # coin is locked to Q = P + H_TapTweak(P)*G. The musig signing flow applies
+        # the same tweak internally so the aggregated signature is valid under Q.
+        # (Regression test for the key-path taproot tweak fix.)
         p2tr_buf, _ = make_cbuffer('00' * 34)
         ret, p2tr_written = wally_scriptpubkey_p2tr_from_bytes(
-            agg_pk_xonly, EC_XONLY_PUBLIC_KEY_LEN, 0, p2tr_buf, 34)
+            agg_pubkey_buf, EC_PUBLIC_KEY_LEN, 0, p2tr_buf, 34)
         self.assertEqual(WALLY_OK, ret)
         p2tr_bytes = bytes(p2tr_buf[:p2tr_written])
         self.assertEqual(34, len(p2tr_bytes))
@@ -1263,10 +1271,13 @@ class MuSig2Tests(unittest.TestCase):
         agg_pubkey = bytes([0x02]) + bytes(agg_pk_xonly)
         agg_pubkey_buf, _ = make_cbuffer(agg_pubkey.hex())
 
-        # Build P2TR scriptpubkey from x-only internal key (no tapscript = keypath only)
+        # Build a standard BIP-341 P2TR scriptpubkey (output tweaked to Q). Pass the
+        # 33-byte COMPRESSED aggregate key so wally applies the key-path output tweak;
+        # the musig signing flow applies the same tweak internally so the aggregated
+        # signature is valid under Q. (Regression test for the key-path tweak fix.)
         p2tr_buf, _ = make_cbuffer('00' * 34)
         ret, p2tr_written = wally_scriptpubkey_p2tr_from_bytes(
-            agg_pk_xonly, EC_XONLY_PUBLIC_KEY_LEN, 0, p2tr_buf, 34)
+            agg_pubkey_buf, EC_PUBLIC_KEY_LEN, 0, p2tr_buf, 34)
         self.assertEqual(WALLY_OK, ret)
         p2tr_bytes = bytes(p2tr_buf[:p2tr_written])
         self.assertEqual(34, len(p2tr_bytes))

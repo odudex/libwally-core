@@ -479,6 +479,12 @@ WALLY_CORE_API int wally_musig_nonce_gen(
 
     if (!session_secrand32 || session_secrand_len != 32)
         return WALLY_EINVAL;
+    if (mem_is_zero(session_secrand32, session_secrand_len))
+        return WALLY_EINVAL; /* All-zero session randomness is never valid: it must be
+                              * unique and uniformly random. Reject the most common
+                              * uninitialized/predictable input as defense-in-depth.
+                              * The caller is still responsible for real entropy and
+                              * never reusing a value across signing sessions. */
     if (seckey && seckey_len != 32)
         return WALLY_EINVAL;
     if (!seckey && seckey_len != 0)
