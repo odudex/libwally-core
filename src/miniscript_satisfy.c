@@ -8,8 +8,13 @@ static size_t witness_weight(const ms_witness *w)
     if (w->kind != MS_WITNESS_STACK)
         return SIZE_MAX;
     size_t total = 0;
-    for (size_t i = 0; i < w->num_items; i++)
-        total += w->items[i].data_len + 1;
+    for (size_t i = 0; i < w->num_items; i++) {
+        size_t item = w->items[i].data_len;
+        /* Saturate at SIZE_MAX-1 so SIZE_MAX stays the non-stack sentinel. */
+        if (item >= SIZE_MAX - 1 || total >= SIZE_MAX - 1 - item)
+            return SIZE_MAX - 1;
+        total += item + 1;
+    }
     return total;
 }
 
