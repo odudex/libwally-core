@@ -5444,6 +5444,7 @@ static int psbt_populate_taproot_keypaths_from_descriptor(
     uint32_t num_leaves = 0, num_desc_keys = 0, leaf_idx, num_keys, key_pos, key_idx;
     unsigned char xonly_pub[EC_XONLY_PUBLIC_KEY_LEN];
     unsigned char fingerprint[BIP32_KEY_FINGERPRINT_LEN];
+    unsigned char *leaf_hash_buf = NULL;
     uint32_t *path_buf = NULL;
     size_t path_len = 0;
     int ret = WALLY_OK;
@@ -5452,10 +5453,13 @@ static int psbt_populate_taproot_keypaths_from_descriptor(
         return ret;
     if ((ret = wally_descriptor_get_num_keys(descriptor, &num_desc_keys)) != WALLY_OK)
         return ret;
+    /* Heap-allocate the leaf hash scratch (4KB) to keep this off the (small,
+     * on embedded targets) stack; it holds public tapleaf hashes only. */
+    if (!(leaf_hash_buf = wally_malloc(TR_MAX_MERKLE_PATH_LEN * SHA256_LEN)))
+        return WALLY_ENOMEM;
 
     for (key_idx = 0; key_idx < num_desc_keys; key_idx++) {
         /* For each descriptor-level key, collect the leaf hashes of all leaves it participates in */
-        unsigned char leaf_hash_buf[TR_MAX_MERKLE_PATH_LEN * SHA256_LEN];
         size_t num_leaf_hashes = 0;
         bool key_found = false;
 
@@ -5473,7 +5477,7 @@ static int psbt_populate_taproot_keypaths_from_descriptor(
 
                 if (desc_key_idx == (uint32_t)key_idx) {
                     /* This key participates in this leaf */
-                    if (num_leaf_hashes * SHA256_LEN >= sizeof(leaf_hash_buf)) {
+                    if (num_leaf_hashes * SHA256_LEN >= TR_MAX_MERKLE_PATH_LEN * SHA256_LEN) {
                         ret = WALLY_EINVAL; /* Too many leaf hashes */
                         goto done;
                     }
@@ -5525,6 +5529,7 @@ static int psbt_populate_taproot_keypaths_from_descriptor(
     }
 
 done:
+    wally_free(leaf_hash_buf);
     wally_free(path_buf);
     return ret;
 }
@@ -5534,9 +5539,10 @@ int wally_psbt_input_set_taproot_from_descriptor(
     const struct wally_descriptor *descriptor,
     uint32_t multi_index, uint32_t child_num, uint32_t flags)
 {
+    const size_t ctrl_block_len = 1 + EC_XONLY_PUBLIC_KEY_LEN + 128 * SHA256_LEN;
     struct wally_psbt_input *inp;
     unsigned char internal_key[EC_XONLY_PUBLIC_KEY_LEN];
-    unsigned char ctrl_block[1 + EC_XONLY_PUBLIC_KEY_LEN + 128 * SHA256_LEN];
+    unsigned char *ctrl_block = NULL;
     unsigned char *leaf_script = NULL;
     unsigned char merkle_root[SHA256_LEN];
     uint32_t num_leaves = 0, leaf_idx;
@@ -5548,30 +5554,35 @@ int wally_psbt_input_set_taproot_from_descriptor(
     if (!(inp = psbt_get_input(psbt, index)))
         return WALLY_EINVAL;
 
+    /* Heap-allocate the control block scratch (4KB) to keep it off the (small,
+     * on embedded targets) stack; it holds public data only. */
+    if (!(ctrl_block = wally_malloc(ctrl_block_len)))
+        return WALLY_ENOMEM;
+
     /* Step 1: Get and set the internal key */
     ret = wally_descriptor_get_taproot_internal_key(descriptor, 0, multi_index, child_num, 0,
                                                      internal_key, sizeof(internal_key));
     if (ret != WALLY_OK)
-        return ret;
+        goto done;
     ret = wally_psbt_input_set_taproot_internal_key(inp, internal_key, sizeof(internal_key));
     if (ret != WALLY_OK)
-        return ret;
+        goto done;
 
     /* Step 2: Get number of taptree leaves */
     ret = wally_descriptor_get_taproot_num_leaves(descriptor, &num_leaves);
     if (ret != WALLY_OK)
-        return ret;
+        goto done;
 
     /* Step 3: Set TAP_MERKLE_ROOT if taptree exists */
     if (num_leaves > 0) {
         ret = wally_descriptor_get_taproot_merkle_root(descriptor, 0, multi_index, child_num, 0,
                                                         merkle_root, sizeof(merkle_root));
         if (ret != WALLY_OK)
-            return ret;
+            goto done;
         ret = map_field_set(&inp->psbt_fields, PSBT_IN_TAP_MERKLE_ROOT,
                              merkle_root, sizeof(merkle_root));
         if (ret != WALLY_OK)
-            return ret;
+            goto done;
     }
 
     /* Step 4: Add TAP_LEAF_SCRIPT for each leaf */
@@ -5584,45 +5595,50 @@ int wally_psbt_input_set_taproot_from_descriptor(
                 0, multi_index, child_num, 0,
                 NULL, 0, &ctrl_len);
         if (ret != WALLY_OK)
-            return ret;
-        if (ctrl_len > sizeof(ctrl_block))
-            return WALLY_EINVAL;
+            goto done;
+        if (ctrl_len > ctrl_block_len) {
+            ret = WALLY_EINVAL;
+            goto done;
+        }
         ret = wally_descriptor_get_taproot_control_block(descriptor, leaf_idx,
                 0, multi_index, child_num, 0,
                 ctrl_block, ctrl_len, &ctrl_len);
         if (ret != WALLY_OK)
-            return ret;
+            goto done;
 
         /* Get leaf script (query size first, then allocate dynamically) */
         ret = wally_descriptor_get_taproot_leaf_script(descriptor, leaf_idx,
                 0, multi_index, child_num, 0,
                 NULL, 0, &script_len);
         if (ret != WALLY_OK)
-            return ret;
+            goto done;
         leaf_script = wally_malloc(script_len ? script_len : 1);
-        if (!leaf_script)
-            return WALLY_ENOMEM;
+        if (!leaf_script) {
+            ret = WALLY_ENOMEM;
+            goto done;
+        }
         ret = wally_descriptor_get_taproot_leaf_script(descriptor, leaf_idx,
                 0, multi_index, child_num, 0,
                 leaf_script, script_len, &script_len);
-        if (ret != WALLY_OK) {
-            wally_free(leaf_script);
-            leaf_script = NULL;
-            return ret;
-        }
+        if (ret != WALLY_OK)
+            goto done;
 
         ret = wally_psbt_input_add_taproot_leaf_script(inp,
                 ctrl_block, ctrl_len, leaf_script, script_len);
         wally_free(leaf_script);
         leaf_script = NULL;
         if (ret != WALLY_OK)
-            return ret;
+            goto done;
     }
 
     /* Step 5: Add TAP_BIP32_DERIVATION for each key in the taptree */
     if (num_leaves > 0)
         ret = psbt_populate_taproot_keypaths_from_descriptor(inp, descriptor,
                                                              multi_index, child_num);
+
+done:
+    wally_free(leaf_script);
+    wally_free(ctrl_block);
     return ret;
 }
 
@@ -5635,7 +5651,7 @@ int wally_psbt_output_set_taproot_from_descriptor(
     unsigned char internal_key[EC_XONLY_PUBLIC_KEY_LEN];
     unsigned char xonly_pub[EC_XONLY_PUBLIC_KEY_LEN];
     unsigned char fingerprint[BIP32_KEY_FINGERPRINT_LEN];
-    unsigned char leaf_hash_buf[TR_MAX_MERKLE_PATH_LEN * SHA256_LEN];
+    unsigned char *leaf_hash_buf = NULL;
     uint32_t *path_buf = NULL;
     size_t path_len = 0, num_leaf_hashes;
     uint32_t num_leaves = 0, leaf_idx, num_keys, key_pos;
@@ -5666,6 +5682,10 @@ int wally_psbt_output_set_taproot_from_descriptor(
     ret = wally_descriptor_get_num_keys(descriptor, &num_desc_keys_out);
     if (ret != WALLY_OK)
         return ret;
+    /* Heap-allocate the leaf hash scratch (4KB) to keep it off the stack;
+     * it holds public tapleaf hashes only. */
+    if (!(leaf_hash_buf = wally_malloc(TR_MAX_MERKLE_PATH_LEN * SHA256_LEN)))
+        return WALLY_ENOMEM;
     for (key_idx = 0; key_idx < num_desc_keys_out; key_idx++) {
         num_leaf_hashes = 0;
         key_found = false;
@@ -5681,7 +5701,7 @@ int wally_psbt_output_set_taproot_from_descriptor(
                 if (ret != WALLY_OK)
                     goto done;
                 if (desc_key_idx == (uint32_t)key_idx) {
-                    if (num_leaf_hashes * SHA256_LEN >= sizeof(leaf_hash_buf)) {
+                    if (num_leaf_hashes * SHA256_LEN >= TR_MAX_MERKLE_PATH_LEN * SHA256_LEN) {
                         ret = WALLY_EINVAL;
                         goto done;
                     }
@@ -5727,6 +5747,7 @@ int wally_psbt_output_set_taproot_from_descriptor(
     }
 
 done:
+    wally_free(leaf_hash_buf);
     wally_free(path_buf);
     return ret;
 }
