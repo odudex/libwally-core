@@ -2733,6 +2733,34 @@ static bool test_taproot_miniscript(void)
 done_single:
     wally_descriptor_free(desc); desc = NULL;
 
+#ifdef BUILD_ELEMENTS
+    /* Regression for the Elements TapLeaf tag fix: the identical leaf script
+     * must hash with the "TapLeaf/elements" tag under Elements, so its leaf hash
+     * differs from the Bitcoin tr() leaf hash (which uses "TapLeaf"). */
+    {
+        struct wally_descriptor *btc = NULL, *el = NULL;
+        unsigned char btc_hash[32], el_hash[32];
+        int r1 = wally_descriptor_parse("tr(x_only,pk(key_1))", &g_vars[VARS_STD],
+                                        WALLY_NETWORK_BITCOIN_MAINNET, 0, &btc);
+        int r2 = wally_descriptor_parse("tr(x_only,pk(key_1))", &g_vars[VARS_STD],
+                                        WALLY_NETWORK_NONE, WALLY_MINISCRIPT_AS_ELEMENTS, &el);
+        if (!check_ret("parse btc tr", r1, WALLY_OK) ||
+            !check_ret("parse elements tr", r2, WALLY_OK)) { ok = false; }
+        else {
+            r1 = wally_descriptor_get_taproot_leaf_hash(btc, 0, 0, 0, 0, 0, btc_hash, 32);
+            r2 = wally_descriptor_get_taproot_leaf_hash(el, 0, 0, 0, 0, 0, el_hash, 32);
+            if (!check_ret("btc leaf_hash", r1, WALLY_OK) ||
+                !check_ret("elements leaf_hash", r2, WALLY_OK)) { ok = false; }
+            else if (memcmp(btc_hash, el_hash, 32) == 0) {
+                printf("FAIL: Elements taproot leaf hash equals Bitcoin (TapLeaf/elements tag not applied)\n");
+                ok = false;
+            }
+        }
+        wally_descriptor_free(btc);
+        wally_descriptor_free(el);
+    }
+#endif
+
     /* --- tr(x_only, {pk(key_1), {pk(key_2), pk(key_3)}}) --- */
     ret = wally_descriptor_parse("tr(x_only,{pk(key_1),{pk(key_2),pk(key_3)}})", &g_vars[VARS_STD],
         WALLY_NETWORK_BITCOIN_MAINNET, 0, &desc);

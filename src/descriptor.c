@@ -1842,8 +1842,19 @@ static int generate_raw_tr(ms_ctx *ctx, ms_node *node,
     return ret;
 }
 
+static bool ms_ctx_is_elements(const ms_ctx *ctx)
+{
+#ifdef BUILD_ELEMENTS
+    return (ctx->features & WALLY_MS_IS_ELEMENTS) != 0;
+#else
+    (void)ctx;
+    return false;
+#endif
+}
+
 static int compute_tapbranch_hash(const unsigned char *left,
                                   const unsigned char *right,
+                                  bool is_elements,
                                   unsigned char *hash_out)
 {
     unsigned char buf[SHA256_LEN * 2];
@@ -1861,7 +1872,9 @@ static int compute_tapbranch_hash(const unsigned char *left,
 
     memcpy(buf, first, SHA256_LEN);
     memcpy(buf + SHA256_LEN, second, SHA256_LEN);
-    return wally_bip340_tagged_hash(buf, sizeof(buf), "TapBranch", hash_out, SHA256_LEN);
+    return wally_bip340_tagged_hash(buf, sizeof(buf),
+                                    is_elements ? "TapBranch/elements" : "TapBranch",
+                                    hash_out, SHA256_LEN);
 }
 
 static int compute_taptree_hash(ms_ctx *ctx, ms_node *subtree_root,
@@ -1881,7 +1894,8 @@ static int compute_taptree_hash(ms_ctx *ctx, ms_node *subtree_root,
         ret = compute_taptree_hash(ctx, subtree_root->child->next, right_hash);
         if (ret != WALLY_OK)
             return ret;
-        return compute_tapbranch_hash(left_hash, right_hash, hash_out);
+        return compute_tapbranch_hash(left_hash, right_hash,
+                                      ms_ctx_is_elements(ctx), hash_out);
     } else {
         /* Leaf node: must be a complete miniscript expression (type B/V/K/W) */
         if (!(subtree_root->type_properties & TYPE_MASK))
@@ -1899,7 +1913,8 @@ static int compute_taptree_hash(ms_ctx *ctx, ms_node *subtree_root,
 
         ret = generate_script(ctx, subtree_root, script_buf, script_buf_len, &written);
         if (ret == WALLY_OK)
-            ret = tapleaf_hash(WALLY_LEAF_VERSION_TAPSCRIPT, script_buf, written, hash_out);
+            ret = tapleaf_hash(WALLY_LEAF_VERSION_TAPSCRIPT, script_buf, written,
+                               ms_ctx_is_elements(ctx), hash_out);
         wally_free(script_buf);
         return ret;
     }
@@ -1977,7 +1992,8 @@ static int collect_merkle_path_impl(ms_ctx *ctx, ms_node *subtree_root,
             (*path_len)++;
             *found = true;
         }
-        return compute_tapbranch_hash(left_hash, right_hash, hash_out);
+        return compute_tapbranch_hash(left_hash, right_hash,
+                                      ms_ctx_is_elements(ctx), hash_out);
     } else {
         /* Leaf node: must be a complete miniscript expression (type B/V/K/W) */
         if (!(subtree_root->type_properties & TYPE_MASK))
@@ -1995,7 +2011,8 @@ static int collect_merkle_path_impl(ms_ctx *ctx, ms_node *subtree_root,
 
         ret = generate_script(ctx, subtree_root, script_buf, script_buf_len, &written);
         if (ret == WALLY_OK)
-            ret = tapleaf_hash(WALLY_LEAF_VERSION_TAPSCRIPT, script_buf, written, hash_out);
+            ret = tapleaf_hash(WALLY_LEAF_VERSION_TAPSCRIPT, script_buf, written,
+                               ms_ctx_is_elements(ctx), hash_out);
         wally_free(script_buf);
 
         if (ret == WALLY_OK) {
@@ -4672,7 +4689,8 @@ int wally_descriptor_get_taproot_leaf_hash(
 
     ret = generate_script(&ctx, leaf, script_buf, script_buf_len, &written);
     if (ret == WALLY_OK)
-        ret = tapleaf_hash(WALLY_LEAF_VERSION_TAPSCRIPT, script_buf, written, bytes_out);
+        ret = tapleaf_hash(WALLY_LEAF_VERSION_TAPSCRIPT, script_buf, written,
+                           ms_ctx_is_elements(&ctx), bytes_out);
 
 cleanup:
     wally_free(ctx.path_buff);

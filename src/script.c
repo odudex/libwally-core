@@ -143,7 +143,7 @@ size_t varint_to_bytes(uint64_t v, unsigned char *bytes_out)
 
 int tapleaf_hash(unsigned char leaf_version,
                  const unsigned char *script, size_t script_len,
-                 unsigned char *hash_out)
+                 bool is_elements, unsigned char *hash_out)
 {
     unsigned char *buf;
     size_t buf_len, offset = 0;
@@ -159,7 +159,9 @@ int tapleaf_hash(unsigned char leaf_version,
     memcpy(buf + offset, script, script_len);
     offset += script_len;
 
-    ret = wally_bip340_tagged_hash(buf, offset, "TapLeaf", hash_out, SHA256_LEN);
+    ret = wally_bip340_tagged_hash(buf, offset,
+                                   is_elements ? "TapLeaf/elements" : "TapLeaf",
+                                   hash_out, SHA256_LEN);
     wally_free(buf);
     return ret;
 }

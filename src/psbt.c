@@ -2526,6 +2526,8 @@ static int pull_taproot_derivation(const unsigned char **cursor, size_t *max,
         return WALLY_EINVAL; ;
     pull_subfield_start(cursor, max, pull_varint(cursor, max), &val, &val_len);
     num_hashes = pull_varint(&val, &val_len);
+    if (num_hashes > TR_MAX_MERKLE_PATH_LEN)
+        return WALLY_EINVAL; /* Implausible count; also guards size_t overflow */
     hashes_len = num_hashes * SHA256_LEN;
     if (!(hashes = pull_skip(&val, &val_len, hashes_len)))
         return WALLY_EINVAL;
@@ -4938,7 +4940,8 @@ int wally_psbt_get_input_signature_hash(struct wally_psbt *psbt, size_t index,
 /* Find the leaf script in taproot_leaf_scripts whose tapleaf hash matches leaf_hash */
 static const struct wally_map_item *find_tap_leaf_script_by_hash(
     const struct wally_psbt_input *inp,
-    const unsigned char *leaf_hash)
+    const unsigned char *leaf_hash,
+    bool is_elements)
 {
     const struct wally_map_item *ls;
     unsigned char computed[SHA256_LEN];
@@ -4948,7 +4951,7 @@ static const struct wally_map_item *find_tap_leaf_script_by_hash(
     for (j = 0; j < inp->taproot_leaf_scripts.num_items; j++) {
         ls = &inp->taproot_leaf_scripts.items[j];
         lv = ls->key[0] & 0xfeu; /* BIP-341: leaf_version = ctrl_block[0] & 0xfe */
-        if (tapleaf_hash(lv, ls->value, ls->value_len, computed) == WALLY_OK &&
+        if (tapleaf_hash(lv, ls->value, ls->value_len, is_elements, computed) == WALLY_OK &&
             memcmp(computed, leaf_hash, SHA256_LEN) == 0)
             return ls;
     }
@@ -4991,10 +4994,13 @@ static int psbt_sign_script_path(struct wally_psbt *psbt, size_t index,
     unsigned char sig_key[EC_XONLY_PUBLIC_KEY_LEN + SHA256_LEN]; /* xonly || leaf_hash */
     unsigned char txhash[WALLY_TXHASH_LEN];
     size_t sig_len = EC_SIGNATURE_LEN;
-    size_t i, num_leaf_hashes;
+    size_t i, num_leaf_hashes, is_pset = 0;
     uint32_t sighash;
+    bool is_elements;
     int ret = WALLY_OK;
 
+    wally_psbt_is_elements(psbt, &is_pset);
+    is_elements = is_pset != 0;
     num_leaf_hashes = lh_item->value_len / SHA256_LEN;
     sighash = inp->sighash;
     if (!sighash)
@@ -5009,7 +5015,7 @@ static int psbt_sign_script_path(struct wally_psbt *psbt, size_t index,
         const unsigned char *leaf_hash = lh_item->value + i * SHA256_LEN;
         const struct wally_map_item *ls;
 
-        ls = find_tap_leaf_script_by_hash(inp, leaf_hash);
+        ls = find_tap_leaf_script_by_hash(inp, leaf_hash, is_elements);
         if (!ls)
             continue; /* No leaf script for this hash — skip */
 
@@ -5384,24 +5390,26 @@ static int psbt_populate_taproot_keypaths_from_descriptor(
         for (leaf_idx = 0; leaf_idx < num_leaves; leaf_idx++) {
             ret = wally_descriptor_get_taproot_leaf_num_keys(descriptor, leaf_idx, &num_keys);
             if (ret != WALLY_OK)
-                return ret;
+                goto done;
 
             for (key_pos = 0; key_pos < num_keys; key_pos++) {
                 uint32_t desc_key_idx;
                 ret = wally_descriptor_get_taproot_leaf_key_index(descriptor, leaf_idx,
                                                                    key_pos, &desc_key_idx);
                 if (ret != WALLY_OK)
-                    return ret;
+                    goto done;
 
                 if (desc_key_idx == (uint32_t)key_idx) {
                     /* This key participates in this leaf */
-                    if (num_leaf_hashes * SHA256_LEN >= sizeof(leaf_hash_buf))
-                        return WALLY_EINVAL; /* Too many leaf hashes */
+                    if (num_leaf_hashes * SHA256_LEN >= sizeof(leaf_hash_buf)) {
+                        ret = WALLY_EINVAL; /* Too many leaf hashes */
+                        goto done;
+                    }
                     ret = wally_descriptor_get_taproot_leaf_hash(
                         descriptor, leaf_idx, 0, multi_index, child_num, 0,
                         leaf_hash_buf + num_leaf_hashes * SHA256_LEN, SHA256_LEN);
                     if (ret != WALLY_OK)
-                        return ret;
+                        goto done;
                     num_leaf_hashes++;
                     key_found = true;
                     break; /* Key appears at most once per leaf */
@@ -5417,7 +5425,7 @@ static int psbt_populate_taproot_keypaths_from_descriptor(
                                                          0, multi_index, child_num, 0,
                                                          xonly_pub, sizeof(xonly_pub));
         if (ret != WALLY_OK)
-            return ret;
+            goto done;
 
         /* Get fingerprint (use zeros if no origin info) */
         memset(fingerprint, 0, sizeof(fingerprint));
@@ -5593,21 +5601,23 @@ int wally_psbt_output_set_taproot_from_descriptor(
         for (leaf_idx = 0; leaf_idx < num_leaves; leaf_idx++) {
             ret = wally_descriptor_get_taproot_leaf_num_keys(descriptor, leaf_idx, &num_keys);
             if (ret != WALLY_OK)
-                return ret;
+                goto done;
 
             for (key_pos = 0; key_pos < num_keys; key_pos++) {
                 ret = wally_descriptor_get_taproot_leaf_key_index(descriptor, leaf_idx,
                                                                    key_pos, &desc_key_idx);
                 if (ret != WALLY_OK)
-                    return ret;
+                    goto done;
                 if (desc_key_idx == (uint32_t)key_idx) {
-                    if (num_leaf_hashes * SHA256_LEN >= sizeof(leaf_hash_buf))
-                        return WALLY_EINVAL;
+                    if (num_leaf_hashes * SHA256_LEN >= sizeof(leaf_hash_buf)) {
+                        ret = WALLY_EINVAL;
+                        goto done;
+                    }
                     ret = wally_descriptor_get_taproot_leaf_hash(
                         descriptor, leaf_idx, 0, multi_index, child_num, 0,
                         leaf_hash_buf + num_leaf_hashes * SHA256_LEN, SHA256_LEN);
                     if (ret != WALLY_OK)
-                        return ret;
+                        goto done;
                     num_leaf_hashes++;
                     key_found = true;
                     break;
@@ -5621,7 +5631,7 @@ int wally_psbt_output_set_taproot_from_descriptor(
         ret = wally_descriptor_get_key_xonly_public_key(descriptor, key_idx,
                 0, multi_index, child_num, 0, xonly_pub, sizeof(xonly_pub));
         if (ret != WALLY_OK)
-            return ret;
+            goto done;
 
         memset(fingerprint, 0, sizeof(fingerprint));
         (void)wally_descriptor_get_key_origin_fingerprint(descriptor, key_idx,
@@ -6108,10 +6118,13 @@ static int select_best_tapscript_leaf(
     const unsigned char **best_script_out, size_t *best_script_len_out,
     const unsigned char **best_ctrl_out,   size_t *best_ctrl_len_out)
 {
-    size_t i, best_weight = SIZE_MAX;
+    size_t i, best_weight = SIZE_MAX, is_pset = 0;
     ms_satisfaction best_sat;
     bool any_satisfiable = false;
+    bool is_elements;
 
+    wally_psbt_is_elements(psbt, &is_pset);
+    is_elements = is_pset != 0;
     memset(&best_sat, 0, sizeof(best_sat));
     *best_witness_out = NULL;
     *best_script_out = NULL;
@@ -6131,7 +6144,7 @@ static int select_best_tapscript_leaf(
         ms_satisfaction sat, dissat;
         size_t j, w;
 
-        if (tapleaf_hash(leaf_version, script, script_len, leaf_hash) != WALLY_OK)
+        if (tapleaf_hash(leaf_version, script, script_len, is_elements, leaf_hash) != WALLY_OK)
             continue;
 
         if (decode_script_to_node(script, script_len, WALLY_MINISCRIPT_TAPSCRIPT, &node) != WALLY_OK || !node)
@@ -7717,6 +7730,8 @@ int wally_psbt_musig2_add_nonce(
         return WALLY_EINVAL;
     if (!leaf_hash && leaf_hash_len != 0)
         return WALLY_EINVAL;
+    if (leaf_hash)
+        return WALLY_EINVAL; /* Script-path MuSig2 not yet supported (would sign a key-path BIP-341 sighash) */
     if (flags)
         return WALLY_EINVAL;
     if (!secnonce_out)
@@ -7913,6 +7928,8 @@ int wally_psbt_musig2_sign(
         return WALLY_EINVAL;
     if (!leaf_hash && leaf_hash_len != 0)
         return WALLY_EINVAL;
+    if (leaf_hash)
+        return WALLY_EINVAL; /* Script-path MuSig2 not yet supported (would sign a key-path BIP-341 sighash) */
     if (!keyagg_cache)
         return WALLY_EINVAL;
     if (flags)
@@ -8092,6 +8109,8 @@ int wally_psbt_musig2_finalize_input(
         return WALLY_EINVAL;
     if (!leaf_hash && leaf_hash_len != 0)
         return WALLY_EINVAL;
+    if (leaf_hash)
+        return WALLY_EINVAL; /* Script-path MuSig2 not yet supported (would sign a key-path BIP-341 sighash) */
     if (!keyagg_cache)
         return WALLY_EINVAL;
     if (flags)
