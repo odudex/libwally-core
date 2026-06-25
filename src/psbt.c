@@ -677,6 +677,73 @@ static int map_leaf_hashes_verify(const unsigned char *key, size_t key_len,
     return ret;
 }
 
+/* BIP-371 PSBT_IN_TAP_SCRIPT_SIG: key = x-only pubkey(32) + leaf hash(32),
+ * value = 64 or 65 byte BIP-340 Schnorr signature. */
+static int taproot_leaf_signature_verify(const unsigned char *key, size_t key_len,
+                                         const unsigned char *val, size_t val_len)
+{
+    if (!key || key_len != EC_XONLY_PUBLIC_KEY_LEN + SHA256_LEN)
+        return WALLY_EINVAL;
+    if (wally_ec_xonly_public_key_verify(key, EC_XONLY_PUBLIC_KEY_LEN) != WALLY_OK)
+        return WALLY_EINVAL;
+    if (!val || (val_len != EC_SIGNATURE_LEN && val_len != EC_SIGNATURE_LEN + 1))
+        return WALLY_EINVAL;
+    return WALLY_OK;
+}
+
+/* BIP-371 PSBT_IN_TAP_LEAF_SCRIPT: key = BIP-341 control block, value = the
+ * tapscript (the leaf version is taken from the control block, see BIP-341). */
+static int taproot_leaf_script_verify(const unsigned char *key, size_t key_len,
+                                      const unsigned char *val, size_t val_len)
+{
+    if (wally_bip341_control_block_verify(key, key_len) != WALLY_OK)
+        return WALLY_EINVAL;
+    if (!val || !val_len)
+        return WALLY_EINVAL;
+    return WALLY_OK;
+}
+
+/* BIP-371 PSBT_OUT_TAP_TREE value: a depth-first sequence of
+ * <8-bit depth> <8-bit leaf version> <compact-size scriptlen> <script>. */
+static int taproot_tree_value_verify(const unsigned char *val, size_t val_len)
+{
+    if (!val || !val_len)
+        return WALLY_EINVAL;
+    while (val_len) {
+        uint64_t script_len;
+        size_t vlen;
+        if (val_len < 3)
+            return WALLY_EINVAL; /* depth(1) + leaf version(1) + >=1 script-len byte */
+        if (val[0] > TR_MAX_MERKLE_PATH_LEN)
+            return WALLY_EINVAL; /* depth exceeds the BIP-341 maximum */
+        if ((val[1] & 1u) || val[1] == 0x50u)
+            return WALLY_EINVAL; /* leaf version parity bit set, or annex tag */
+        val += 2;
+        val_len -= 2;
+        vlen = varint_length_from_bytes(val); /* safe: val_len >= 1 here */
+        if (val_len < vlen)
+            return WALLY_EINVAL;
+        varint_from_bytes(val, &script_len);
+        val += vlen;
+        val_len -= vlen;
+        if (!script_len || script_len > val_len)
+            return WALLY_EINVAL; /* empty leaf, or script overruns the buffer */
+        val += script_len;
+        val_len -= script_len;
+    }
+    return WALLY_OK;
+}
+
+/* Integer-keyed map of PSBT_OUT_TAP_TREE values (key is NULL). */
+static int taproot_tree_verify(const unsigned char *key, size_t key_len,
+                               const unsigned char *val, size_t val_len)
+{
+    (void)key_len;
+    if (key)
+        return WALLY_EINVAL;
+    return taproot_tree_value_verify(val, val_len);
+}
+
 static int psbt_input_field_verify(uint32_t field_type,
                                    const unsigned char *val, size_t val_len)
 {
@@ -758,8 +825,7 @@ static int psbt_output_field_verify(uint32_t field_type,
         /* 32 byte x-only pubkey */
         return val && val_len == SHA256_LEN ? WALLY_OK : WALLY_EINVAL;
     case PSBT_OUT_TAP_TREE:
-        /* FIXME: validate the tree is in the expected encoded format */
-        return val && val_len >= 4 ? WALLY_OK : WALLY_EINVAL;
+        return taproot_tree_value_verify(val, val_len);
     default:
         break;
     }
@@ -1018,8 +1084,8 @@ static void psbt_input_init(struct wally_psbt_input *input)
     wally_map_init(0, NULL, &input->unknowns);
     wally_map_init(0, wally_map_hash_preimage_verify, &input->preimages);
     wally_map_init(0, psbt_map_input_field_verify, &input->psbt_fields);
-    wally_map_init(0, NULL /* FIXME */, &input->taproot_leaf_signatures);
-    wally_map_init(0, NULL /* FIXME */, &input->taproot_leaf_scripts);
+    wally_map_init(0, taproot_leaf_signature_verify, &input->taproot_leaf_signatures);
+    wally_map_init(0, taproot_leaf_script_verify, &input->taproot_leaf_scripts);
     wally_map_init(0, map_leaf_hashes_verify, &input->taproot_leaf_hashes);
     wally_map_init(0, wally_keypath_xonly_public_key_verify, &input->taproot_leaf_paths);
     wally_map_init(0, musig2_participant_pubkeys_verify, &input->musig2_pubkeys);
@@ -1336,7 +1402,7 @@ static void psbt_output_init(struct wally_psbt_output *output)
     wally_map_init(0, wally_keypath_public_key_verify, &output->keypaths);
     wally_map_init(0, NULL, &output->unknowns);
     wally_map_init(0, psbt_map_output_field_verify, &output->psbt_fields);
-    wally_map_init(0, NULL, &output->taproot_tree);
+    wally_map_init(0, taproot_tree_verify, &output->taproot_tree);
     wally_map_init(0, map_leaf_hashes_verify, &output->taproot_leaf_hashes);
     wally_map_init(0, wally_keypath_xonly_public_key_verify, &output->taproot_leaf_paths);
     wally_map_init(0, musig2_participant_pubkeys_verify, &output->musig2_pubkeys);
