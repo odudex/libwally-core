@@ -69,9 +69,11 @@ WALLY_CORE_API int wally_musig_keyagg_cache_serialize(
 /**
  * Restore a keyagg_cache from its raw 197-byte form.
  *
- * WARNING: Do NOT call this on bytes from untrusted sources. The struct is not
- * cryptographically validated; malformed bytes produce undefined signing behaviour.
- * Only round-trip bytes produced by wally_musig_keyagg_cache_serialize().
+ * The aggregate key is checked, which rejects a corrupted magic or aggregate-key
+ * field. This is NOT a full integrity check: tampering with the tweak or other
+ * fields is not detected, so do not treat a successful parse as authentication of
+ * data crossing a trust boundary. Only round-trip bytes produced by
+ * wally_musig_keyagg_cache_serialize().
  *
  * :param bytes: The 197-byte serialized keyagg_cache.
  * :param bytes_len: Length of bytes. Must be WALLY_MUSIG_KEYAGG_CACHE_LEN.

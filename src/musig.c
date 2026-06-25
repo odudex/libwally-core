@@ -68,15 +68,27 @@ WALLY_CORE_API int wally_musig_keyagg_cache_parse(
     size_t bytes_len,
     struct wally_musig_keyagg_cache **output)
 {
+    const secp256k1_context *ctx = secp_ctx();
     struct wally_musig_keyagg_cache *cache;
+    secp256k1_pubkey agg_pk;
 
     if (!bytes || bytes_len != WALLY_MUSIG_KEYAGG_CACHE_LEN || !output)
         return WALLY_EINVAL;
     *output = NULL;
+    if (!ctx)
+        return WALLY_ENOMEM;
     cache = wally_calloc(sizeof(*cache));
     if (!cache)
         return WALLY_ENOMEM;
     memcpy(cache->data, bytes, WALLY_MUSIG_KEYAGG_CACHE_LEN);
+    /* Validate by extracting the aggregate key. secp256k1-zkp has no full
+     * validator for this struct, but this rejects a corrupted magic or
+     * aggregate-key field rather than deferring the failure to signing. */
+    if (!secp256k1_musig_pubkey_get(ctx, &agg_pk,
+                                    (const secp256k1_musig_keyagg_cache *)cache)) {
+        clear_and_free(cache, sizeof(*cache));
+        return WALLY_EINVAL;
+    }
     *output = cache;
     return WALLY_OK;
 }

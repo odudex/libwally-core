@@ -202,18 +202,15 @@ class MuSig2Tests(unittest.TestCase):
 
     @unittest.skipUnless(wally_musig_pubkey_agg, 'MuSig2 module not enabled')
     def test_malformed_cache_no_abort(self):
-        """A malformed keyagg_cache must return an error, not abort() the process."""
-        # parse() copies bytes without validation, so a wrong-magic but correctly
-        # sized buffer parses OK; using it triggers a secp256k1 precondition check
-        # that must return an error rather than abort() the whole process.
+        """A malformed keyagg_cache must be rejected at parse, not abort() the process."""
+        # A wrong-magic but correctly sized buffer fails the secp256k1 precondition
+        # check inside parse; with the illegal-arg callback installed this must
+        # return an error (leaving output NULL) rather than abort() the process.
         bad_bytes, _ = make_cbuffer('11' * MUSIG_KEYAGG_CACHE_LEN)
         cache = c_void_p()
-        self.assertEqual(WALLY_OK,
+        self.assertEqual(WALLY_EINVAL,
             wally_musig_keyagg_cache_parse(bad_bytes, MUSIG_KEYAGG_CACHE_LEN, cache))
-        comp_pk, _ = make_cbuffer('00' * EC_PUBLIC_KEY_LEN)
-        self.assertNotEqual(WALLY_OK,
-            wally_musig_pubkey_get(cache.value, comp_pk, EC_PUBLIC_KEY_LEN))
-        wally_musig_keyagg_cache_free(cache.value)
+        self.assertEqual(None, cache.value)
 
     @unittest.skipUnless(wally_musig_pubkey_agg, 'MuSig2 module not enabled')
     def test_ec_tweak(self):
