@@ -2573,10 +2573,13 @@ static int pull_taproot_leaf_script(const unsigned char **cursor, size_t *max,
     subfield_nomore_end(cursor, max, *key, *key_len);
 
     pull_varlength_buff(cursor, max, &val, &val_len);
-    if (!val || !val_len)
+    /* BIP-371: value is the tapscript followed by a 1-byte leaf version, which
+     * must match the leaf version encoded in the control block. We store the
+     * script only; the leaf version is always recovered from the control block. */
+    if (!val || val_len < 2u || val[val_len - 1] != (ctrl[0] & 0xfeu))
         return WALLY_EINVAL;
 
-    return map_add(leaf_scripts, ctrl, ctrl_len, val, val_len, false, false);
+    return map_add(leaf_scripts, ctrl, ctrl_len, val, val_len - 1u, false, false);
 }
 
 static int pull_taproot_derivation(const unsigned char **cursor, size_t *max,
@@ -3342,7 +3345,10 @@ static int push_taproot_leaf_scripts(unsigned char **cursor, size_t *max, size_t
             return WALLY_EINVAL;
 
         push_key(cursor, max, ft, false, item->key, item->key_len);
-        push_varbuff(cursor, max, item->value, item->value_len);
+        /* BIP-371 value = tapscript || 1-byte leaf version (from the control block) */
+        push_varint(cursor, max, item->value_len + 1u);
+        push_bytes(cursor, max, item->value, item->value_len);
+        push_u8(cursor, max, item->key[0] & 0xfeu);
     }
     return WALLY_OK;
 }
