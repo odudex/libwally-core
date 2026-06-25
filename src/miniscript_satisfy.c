@@ -603,10 +603,37 @@ typedef struct {
 
 static size_t ms_node_count(const ms_node *node)
 {
-    size_t n = 0;
-    for (; node; node = node->next)
-        n += 1 + ms_node_count(node->child);
-    return n;
+    /* Count `node`, its ->next siblings and all descendants iteratively. An
+     * explicit heap stack (grown by hand, as there is no wally_realloc) avoids
+     * the unbounded recursion that would overflow the stack on deeply-nested
+     * attacker-supplied scripts. On allocation failure we return 0, which the
+     * caller (satisfy_node) treats as an unsatisfiable/impossible tree. */
+    size_t count = 0, cap = 0, sp = 0;
+    const ms_node **stack = NULL;
+    const ms_node *cur = node;
+
+    while (cur || sp) {
+        if (cur) {
+            ++count;
+            if (cur->child) {
+                if (sp == cap) {
+                    size_t new_cap = cap ? cap * 2 : 32;
+                    const ms_node **grown = wally_malloc(new_cap * sizeof(*grown));
+                    if (!grown) { wally_free(stack); return 0; }
+                    if (sp)
+                        memcpy(grown, stack, sp * sizeof(*grown));
+                    wally_free(stack);
+                    stack = grown;
+                    cap = new_cap;
+                }
+                stack[sp++] = cur->child;
+            }
+            cur = cur->next;
+        } else
+            cur = stack[--sp];
+    }
+    wally_free(stack);
+    return count;
 }
 
 typedef struct {

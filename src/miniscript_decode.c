@@ -131,6 +131,14 @@ int tokenize_script(const unsigned char *script, size_t script_len,
                     return WALLY_EINVAL;
                 if (n64 < 0 || n64 > UINT32_MAX)
                     return WALLY_EINVAL;
+                /* Enforce minimal push encoding (anti-malleability): values
+                 * 0..16 must use OP_0/OP_1..OP_16, and the CScriptNum must be
+                 * minimally encoded (no redundant high 0x00 / negative-zero). */
+                if (n64 <= 16)
+                    return WALLY_EINVAL;
+                if ((data[data_len - 1] & 0x7f) == 0 &&
+                    (data_len < 2 || (data[data_len - 2] & 0x80) == 0))
+                    return WALLY_EINVAL;
                 tokens[n].kind = TK_NUM;
                 tokens[n].data.num = (uint32_t)n64;
             } else {
@@ -374,15 +382,29 @@ static void tk_cursor_un_next(tk_cursor_t *c)
 
 void ms_node_free(ms_node *node)
 {
+    /* Free `node` and all of its descendants iteratively. Recursing on ->child
+     * would overflow the stack on deeply-nested attacker-supplied scripts, so we
+     * thread an explicit work-list through the ->next links of the descendant
+     * nodes we own. node->next (a sibling still owned by the caller) is untouched. */
+    ms_node *stack;
     if (!node) return;
-    ms_node *child = node->child;
-    while (child) {
-        ms_node *next = child->next;
-        ms_node_free(child);
-        child = next;
-    }
+    stack = node->child;
     wally_free((void *)node->data);
     wally_free(node);
+    while (stack) {
+        ms_node *m = stack;
+        ms_node *child;
+        stack = stack->next;
+        child = m->child;
+        while (child) {
+            ms_node *sib = child->next;
+            child->next = stack;
+            stack = child;
+            child = sib;
+        }
+        wally_free((void *)m->data);
+        wally_free(m);
+    }
 }
 
 static ms_node *node_alloc(uint32_t kind)
@@ -516,6 +538,11 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
                 } else if (tok->kind == TK_BYTES65) {
                     key_bytes = tok->data.bytes65; key_len = 65;
                 } else {
+                    /* 32-byte x-only keys are only valid in tapscript context */
+                    if (!(ctx_flags & WALLY_MINISCRIPT_TAPSCRIPT)) {
+                        ret = WALLY_EINVAL;
+                        goto cleanup;
+                    }
                     key_bytes = tok->data.bytes32; key_len = 32;
                 }
                 n = node_alloc(KIND_MINISCRIPT_PK_K);
@@ -692,6 +719,13 @@ int decode_script_to_node(const unsigned char *script, size_t script_len,
                 const token_t *t2;
                 uint32_t n, k;
                 ms_node *prev = NULL, *parent;
+
+                /* OP_CHECKMULTISIG(VERIFY) is disabled in tapscript (BIP-342);
+                 * only multi_a (OP_CHECKSIGADD form) is permitted there. */
+                if (ctx_flags & WALLY_MINISCRIPT_TAPSCRIPT) {
+                    ret = WALLY_EINVAL;
+                    goto cleanup;
+                }
 
                 tk_cursor_next(&cursor); /* consume TK_CHECK_MULTI_SIG */
 

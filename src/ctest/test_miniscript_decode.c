@@ -108,14 +108,26 @@ static bool test_tokenize_script(void)
         CHECK(memcmp(tokens[0].data.bytes65, script + 1, 65) == 0);
     }
 
-    /* Push data — CScriptNum (1-byte positive integer, value 5) */
+    /* Push data — CScriptNum: a minimally-encoded value (17, which has no
+     * dedicated push opcode) tokenizes to TK_NUM. */
     {
-        unsigned char script[] = { 0x01, 0x05 };
+        unsigned char script[] = { 0x01, 0x11 };
         ret = tokenize_script(script, 2, tokens, MAX_TOKENS, &count);
         CHECK(ret == WALLY_OK);
         CHECK(count == 1);
         CHECK(tokens[0].kind == TK_NUM);
-        CHECK(tokens[0].data.num == 5);
+        CHECK(tokens[0].data.num == 17);
+    }
+
+    /* Non-minimal numeric pushes must be rejected (anti-malleability): a value
+     * 0..16 must use OP_0/OP_1..OP_16, and redundant trailing bytes are invalid. */
+    {
+        unsigned char small[] = { 0x01, 0x05 };          /* 5 must be OP_5 */
+        unsigned char trailing[] = { 0x02, 0x11, 0x00 }; /* non-minimal 17 */
+        ret = tokenize_script(small, 2, tokens, MAX_TOKENS, &count);
+        CHECK(ret == WALLY_EINVAL);
+        ret = tokenize_script(trailing, 3, tokens, MAX_TOKENS, &count);
+        CHECK(ret == WALLY_EINVAL);
     }
 
     /* Push data — unsupported length (5 bytes) */
@@ -447,7 +459,9 @@ static bool test_decode_pk(void)
         ms_node_free(output); output = NULL;
     }
 
-    /* pk_k with a 32-byte x-only pubkey: script = 0x20 <32 bytes> */
+    /* A bare 32-byte x-only key is NOT valid in segwit-v0 context (keys must be
+     * 33-byte compressed or 65-byte uncompressed); it must be rejected. The valid
+     * tapscript case is tested below. */
     {
         unsigned char script[33];
         unsigned char key[32];
@@ -455,12 +469,8 @@ static bool test_decode_pk(void)
         memset(key, 0xcd, 32);
         memcpy(script + 1, key, 32);
         ret = decode_script_to_node(script, 33, 0, &output);
-        CHECK(ret == WALLY_OK);
-        CHECK(output != NULL);
-        CHECK(output->kind == KIND_MINISCRIPT_PK_K);
-        CHECK(output->data_len == 32);
-        CHECK(memcmp(output->data, key, 32) == 0);
-        ms_node_free(output); output = NULL;
+        CHECK(ret == WALLY_EINVAL);
+        CHECK(output == NULL);
     }
 
     /* pk_h: DUP HASH160 <20-byte-hash> EQUALVERIFY
