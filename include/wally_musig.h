@@ -9,8 +9,9 @@
 extern "C" {
 #endif
 
-#ifndef BUILD_STANDARD_SECP
-
+/* MuSig2 object sizes stay available even under BUILD_STANDARD_SECP: the inert
+ * musig2 PSBT field plumbing (storage/serialization) references these lengths,
+ * while the secp-backed crypto below is compiled out. */
 /** Sizes of serialized MuSig2 objects */
 #define WALLY_MUSIG_PUBNONCE_LEN    66
 #define WALLY_MUSIG_AGGNONCE_LEN    66
@@ -23,6 +24,8 @@ extern "C" {
 
 /** Length of the BIP-328 synthetic chain code (same as BIP-32 chain code) */
 #define WALLY_MUSIG2_CHAINCODE_LEN 32
+
+#ifndef BUILD_STANDARD_SECP
 
 /* Opaque type wrapping secp256k1_musig_keyagg_cache.
  * Holds the result of key aggregation; required for signing. */
