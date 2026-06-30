@@ -130,4 +130,21 @@ struct wally_descriptor {
 
 typedef struct wally_descriptor ms_ctx;
 
+/* Derive the x-only pubkey for the descriptor key at ``index`` */
+int descriptor_get_key_xonly_public_key(
+    const struct wally_descriptor *descriptor,
+    size_t index, uint32_t multi_index, uint32_t child_num,
+    unsigned char *bytes_out, size_t len);
+
+/* Derive the compressed pubkey of a musig() participant, and get its origin
+ * fingerprint (zero if none) and full derivation path (origin path followed
+ * by its child path). The caller must wally_free(*path_out) */
+int descriptor_get_musig_participant_keypath(
+    const struct wally_descriptor *descriptor,
+    size_t index, size_t participant_index,
+    uint32_t multi_index, uint32_t child_num,
+    unsigned char *pub_key_out, size_t pub_key_len,
+    unsigned char *fingerprint_out, size_t fingerprint_len,
+    uint32_t **path_out, size_t *path_len_out);
+
 #endif /* LIBWALLY_CORE_DESCRIPTOR_INT_H */
