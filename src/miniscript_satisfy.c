@@ -287,7 +287,11 @@ static ms_satisfaction satisfaction_push_item(ms_satisfaction s,
     n = s.witness.num_items;
 
     if (n + 1 > s.witness.items_allocation_len) {
-        new_items = wally_malloc((n + 1) * sizeof(ms_witness_item));
+        /* Grow geometrically: building a k-item stack via repeated pushes
+         * is then amortized O(k) rather than O(k^2) reallocations. */
+        size_t new_cap = s.witness.items_allocation_len ?
+                         s.witness.items_allocation_len * 2 : 4;
+        new_items = wally_malloc(new_cap * sizeof(ms_witness_item));
         if (!new_items) {
             ms_satisfaction_free(&s);
             ms_satisfaction_init(&s, MS_WITNESS_IMPOSSIBLE);
@@ -297,7 +301,7 @@ static ms_satisfaction satisfaction_push_item(ms_satisfaction s,
             memcpy(new_items, s.witness.items, n * sizeof(ms_witness_item));
         wally_free(s.witness.items);
         s.witness.items = new_items;
-        s.witness.items_allocation_len = n + 1;
+        s.witness.items_allocation_len = new_cap;
     }
 
     item_data = NULL;
