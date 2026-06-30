@@ -630,6 +630,7 @@ for f in (
     ('wally_psbt_input_set_sequence', c_int, [POINTER(wally_psbt_input), c_uint32]),
     ('wally_psbt_input_set_sighash', c_int, [POINTER(wally_psbt_input), c_uint32]),
     ('wally_psbt_input_set_signatures', c_int, [POINTER(wally_psbt_input), POINTER(wally_map)]),
+    ('wally_psbt_input_set_taproot_from_descriptor', c_int, [POINTER(wally_psbt), c_size_t, c_void_p, c_uint32, c_uint32, c_uint32]),
     ('wally_psbt_input_set_taproot_internal_key', c_int, [POINTER(wally_psbt_input), c_void_p, c_size_t]),
     ('wally_psbt_input_set_taproot_signature', c_int, [POINTER(wally_psbt_input), c_void_p, c_size_t]),
     ('wally_psbt_input_set_unknowns', c_int, [POINTER(wally_psbt_input), POINTER(wally_map)]),

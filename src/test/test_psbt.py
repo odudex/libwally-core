@@ -6,6 +6,9 @@ from util import *
 FLAG_GRIND_R = 0x4
 MOD_NONE = 0
 INIT_PSET = 1
+BIP32_VER_MAIN_PRIVATE = 0x0488ADE4
+BIP32_FLAG_KEY_PUBLIC = 0x1
+BIP32_FP_LEN = 4
 
 with open(root_dir + 'src/data/psbt.json', 'r') as f:
     JSON = json.load(f)
@@ -919,6 +922,74 @@ class PSBTTests(unittest.TestCase):
         self.assertEqual(inp2.taproot_leaf_paths.num_items, 0)
         wally_descriptor_free(d2)
         wally_psbt_free(psbt2)
+
+    def _master_and_xpub(self, seed_byte):
+        seed, seed_len = make_cbuffer(seed_byte * 64)  # 32 bytes
+        m = POINTER(ext_key)()
+        self.assertEqual(WALLY_OK, bip32_key_from_seed_alloc(
+            seed, seed_len, BIP32_VER_MAIN_PRIVATE, 0, m))
+        fp, fp_len = make_cbuffer('00' * BIP32_FP_LEN)
+        self.assertEqual(WALLY_OK, bip32_key_get_fingerprint(m, fp, fp_len))
+        ret, xpub = bip32_key_to_base58(m, BIP32_FLAG_KEY_PUBLIC)
+        self.assertEqual(ret, WALLY_OK)
+        return m, bytes(fp[:BIP32_FP_LEN]).hex(), xpub
+
+    def test_sign_taproot_script_path(self):
+        """Regression test for taproot script-path signing (psbt_sign_script_path).
+
+        Builds a tr() with an internal key A and a pk(B) script leaf, then signs
+        the script path with B's master key. The produced BIP-340 signature is
+        deterministic (NULL aux_rand), so we lock it as a fixed vector."""
+        mA, _fpA, xpubA = self._master_and_xpub('aa')
+        mB, fpB, xpubB = self._master_and_xpub('bb')
+
+        d = c_void_p()
+        desc_str = f'tr({xpubA},pk([{fpB}]{xpubB}))'
+        self.assertEqual(WALLY_OK, wally_descriptor_parse(desc_str, None, MOD_NONE, 0, d))
+
+        # Derive the tr() output scriptpubkey (the prevout being spent)
+        ret, slen = wally_descriptor_to_script_get_maximum_length(d, 0, 0, 0, 0, 0, 0)
+        self.assertEqual(ret, WALLY_OK)
+        spk, spk_len = make_cbuffer('00' * slen)
+        ret, written = wally_descriptor_to_script(d, 0, 0, 0, 0, 0, 0, spk, spk_len)
+        self.assertEqual(ret, WALLY_OK)
+
+        # v2 PSBT with one taproot input and one output
+        psbt = pointer(wally_psbt())
+        self.assertEqual(WALLY_OK, wally_psbt_init_alloc(2, 1, 1, 0, 0, psbt))
+        self.assertEqual(WALLY_OK, wally_psbt_add_tx_input_at(psbt, 0, 0, pointer(wally_tx_input())))
+        tx_out = pointer(wally_tx_output())
+        self.assertEqual(WALLY_OK, wally_tx_output_init_alloc(1000, b'\x00\x14' + b'\xab'*20, 22, tx_out))
+        self.assertEqual(WALLY_OK, wally_psbt_add_tx_output_at(psbt, 0, 0, tx_out))
+
+        # Witness utxo = the tr() prevout
+        utxo = pointer(wally_tx_output())
+        self.assertEqual(WALLY_OK, wally_tx_output_init_alloc(100000, spk, written, utxo))
+        self.assertEqual(WALLY_OK, wally_psbt_set_input_witness_utxo(psbt, 0, utxo))
+
+        # Populate taproot fields (internal key, leaf scripts, tap bip32 derivation)
+        self.assertEqual(WALLY_OK,
+            wally_psbt_input_set_taproot_from_descriptor(psbt, 0, d, 0, 0, 0))
+        inp = psbt.contents.inputs[0]
+        self.assertEqual(inp.taproot_leaf_scripts.num_items, 1)
+
+        # Sign the script path with master B
+        self.assertEqual(WALLY_OK, wally_psbt_sign_bip32(psbt, mB, 0))
+
+        # Exactly one 64-byte (SIGHASH_DEFAULT) script-path signature, with the
+        # expected deterministic value
+        self.assertEqual(inp.taproot_leaf_signatures.num_items, 1)
+        it = inp.taproot_leaf_signatures.items[0]
+        self.assertEqual(it.value_len, 64)
+        sig = bytes((c_ubyte * it.value_len).from_address(it.value)).hex()
+        expected = '25a5ee769c23e8241661cab4c0050332f14a7f06250ad97a823bf67d0bde2a8f' \
+                   '915195a83f96ec895df39eee11295b01154a024eb02496d85abe846534c41593'
+        self.assertEqual(sig, expected)
+
+        wally_descriptor_free(d)
+        wally_psbt_free(psbt)
+        bip32_key_free(mA)
+        bip32_key_free(mB)
 
 
 class Csv2of2SmokeTests(unittest.TestCase):
