@@ -7666,6 +7666,9 @@ int wally_psbt_populate_musig2_from_descriptor(
         unsigned char agg_xonly[EC_XONLY_PUBLIC_KEY_LEN];
         unsigned char agg_comp[EC_PUBLIC_KEY_LEN];
         struct wally_musig_keyagg_cache *cache = NULL;
+        unsigned char *fps = NULL;
+        uint32_t **paths = NULL;
+        size_t *path_lens = NULL;
         size_t n_participants = 0, j, k;
 
         features = 0;
@@ -7723,6 +7726,22 @@ int wally_psbt_populate_musig2_from_descriptor(
         if (ret != WALLY_OK)
             goto free_bufs;
 
+        /* Participant key paths depend only on the participant, not the
+         * input, so derive them once here instead of per input below. */
+        fps = wally_malloc(n_participants * BIP32_KEY_FINGERPRINT_LEN);
+        paths = wally_calloc(n_participants * sizeof(uint32_t *));
+        path_lens = wally_malloc(n_participants * sizeof(size_t));
+        if (!fps || !paths || !path_lens) {
+            ret = WALLY_ENOMEM;
+            goto free_bufs;
+        }
+        for (k = 0; k < n_participants && ret == WALLY_OK; ++k)
+            ret = musig_participant_get_full_path(
+                descriptor, musig_idx, k, child_num,
+                fps + k * BIP32_KEY_FINGERPRINT_LEN, &paths[k], &path_lens[k]);
+        if (ret != WALLY_OK)
+            goto free_bufs;
+
         /* Populate inputs */
         for (j = 0; j < psbt->num_inputs && ret == WALLY_OK; ++j) {
             struct wally_psbt_input *inp = &psbt->inputs[j];
@@ -7739,24 +7758,14 @@ int wally_psbt_populate_musig2_from_descriptor(
                 break;
 
             for (k = 0; k < n_participants && ret == WALLY_OK; ++k) {
-                unsigned char fp[BIP32_KEY_FINGERPRINT_LEN];
-                uint32_t *path = NULL;
-                size_t path_len = 0;
                 const unsigned char *xonly = raw_pubkeys + k * EC_PUBLIC_KEY_LEN + 1;
-
-                ret = musig_participant_get_full_path(
-                    descriptor, musig_idx, k, child_num,
-                    fp, &path, &path_len);
-                if (ret != WALLY_OK)
-                    break;
 
                 ret = wally_psbt_input_taproot_keypath_add(
                     inp,
                     xonly, EC_XONLY_PUBLIC_KEY_LEN,
                     NULL, 0,
-                    fp, BIP32_KEY_FINGERPRINT_LEN,
-                    path, path_len);
-                wally_free(path);
+                    fps + k * BIP32_KEY_FINGERPRINT_LEN, BIP32_KEY_FINGERPRINT_LEN,
+                    paths[k], path_lens[k]);
             }
         }
         if (ret != WALLY_OK)
@@ -7771,6 +7780,12 @@ int wally_psbt_populate_musig2_from_descriptor(
         }
 
 free_bufs:
+        if (paths)
+            for (k = 0; k < n_participants; ++k)
+                wally_free(paths[k]);
+        wally_free(fps);
+        wally_free(paths);
+        wally_free(path_lens);
         wally_free(raw_pubkeys);
         wally_free(sorted_pubkeys);
     }
