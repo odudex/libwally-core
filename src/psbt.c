@@ -5030,29 +5030,24 @@ static const struct wally_map_item *find_tap_leaf_script_by_hash(
     return NULL;
 }
 
-/* Compute a BIP-342 script-path sighash (bypasses the key-path forced NULL) */
+/* Compute a BIP-342 script-path sighash (bypasses the key-path forced NULL).
+ * The scripts/values signing maps are loop-invariant across an input's leaves
+ * and so are supplied by the caller. */
 static int psbt_script_path_sighash(struct wally_psbt *psbt, size_t index,
                                      const struct wally_tx *tx,
+                                     const struct wally_map *scripts,
+                                     const struct wally_map *values,
                                      const unsigned char *leaf_script, size_t leaf_script_len,
                                      uint32_t sighash,
                                      unsigned char *bytes_out, size_t len)
 {
-    struct wally_map scripts, values;
-    int ret;
-
-    ret = get_signing_data(psbt, &scripts, NULL, &values);
-    if (ret == WALLY_OK)
-        ret = wally_tx_get_input_signature_hash(tx, index,
-                &scripts, NULL, &values,
-                leaf_script, leaf_script_len,
-                0, WALLY_NO_CODESEPARATOR, NULL, 0,
-                NULL, 0,
-                sighash, WALLY_SIGTYPE_SW_V1,
-                psbt->signing_cache, bytes_out, len);
-
-    wally_free(scripts.items);
-    wally_free(values.items);
-    return ret;
+    return wally_tx_get_input_signature_hash(tx, index,
+            scripts, NULL, values,
+            leaf_script, leaf_script_len,
+            0, WALLY_NO_CODESEPARATOR, NULL, 0,
+            NULL, 0,
+            sighash, WALLY_SIGTYPE_SW_V1,
+            psbt->signing_cache, bytes_out, len);
 }
 
 /* Sign a taproot script-path input for all matching leaves */
@@ -5065,6 +5060,7 @@ static int psbt_sign_script_path(struct wally_psbt *psbt, size_t index,
     unsigned char sig[EC_SIGNATURE_LEN + 1];
     unsigned char sig_key[EC_XONLY_PUBLIC_KEY_LEN + SHA256_LEN]; /* xonly || leaf_hash */
     unsigned char txhash[WALLY_TXHASH_LEN];
+    struct wally_map scripts, values;
     size_t sig_len = EC_SIGNATURE_LEN;
     size_t i, num_leaf_hashes, is_pset = 0;
     uint32_t sighash;
@@ -5080,6 +5076,12 @@ static int psbt_sign_script_path(struct wally_psbt *psbt, size_t index,
     else if (sighash & 0xffffff00u)
         return WALLY_EINVAL;
 
+    /* The signing data (prevout scripts/values) is identical for every leaf
+     * of this input, so fetch it once rather than per matching leaf. */
+    ret = get_signing_data(psbt, &scripts, NULL, &values);
+    if (ret != WALLY_OK)
+        goto done;
+
     /* Key for sig_key: xonly pubkey (32 bytes, from leaf_hashes map key) */
     memcpy(sig_key, lh_item->key, EC_XONLY_PUBLIC_KEY_LEN);
 
@@ -5093,6 +5095,7 @@ static int psbt_sign_script_path(struct wally_psbt *psbt, size_t index,
 
         /* Compute script-path sighash directly (bypass the key-path NULL forced in public API) */
         ret = psbt_script_path_sighash(psbt, index, tx,
+                                       &scripts, &values,
                                        ls->value, ls->value_len, sighash,
                                        txhash, sizeof(txhash));
         if (ret != WALLY_OK)
@@ -5120,6 +5123,8 @@ static int psbt_sign_script_path(struct wally_psbt *psbt, size_t index,
     }
 
 done:
+    wally_free(scripts.items);
+    wally_free(values.items);
     wally_clear_2(sig, sizeof(sig), txhash, sizeof(txhash));
     return ret;
 }
