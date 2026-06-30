@@ -4829,6 +4829,121 @@ int wally_descriptor_get_taproot_leaf_key_index(
     return leaf_num_keys_impl(descriptor, leaf_index, key_index, value_out, false);
 }
 
+/* Internal: derive the x-only pubkey for a descriptor key (used by psbt.c).
+ * FIXME: replace with a public get_bip32_key() returning a populated ext_key */
+int descriptor_get_key_xonly_public_key(
+    const struct wally_descriptor *descriptor,
+    size_t index, uint32_t multi_index, uint32_t child_num,
+    unsigned char *bytes_out, size_t len)
+{
+    const ms_node *key_node;
+    ms_ctx ctx;
+    unsigned char pubkey[EC_PUBLIC_KEY_LEN];
+    size_t written = 0;
+    int ret;
+
+    if (!descriptor || !bytes_out || len != EC_XONLY_PUBLIC_KEY_LEN ||
+        !index_args_valid(descriptor, 0, multi_index, child_num))
+        return WALLY_EINVAL;
+    if (!(key_node = descriptor_get_key(descriptor, index)))
+        return WALLY_EINVAL;
+
+    if ((ret = ctx_clone(descriptor, 0, multi_index, child_num, &ctx)) != WALLY_OK)
+        return ret;
+
+    /* Generate the pubkey for this key node */
+    ret = generate_script(&ctx, (ms_node *)key_node, pubkey, sizeof(pubkey), &written);
+    wally_free(ctx.path_buff);
+
+    if (ret == WALLY_OK) {
+        if (written == EC_XONLY_PUBLIC_KEY_LEN) {
+            memcpy(bytes_out, pubkey, EC_XONLY_PUBLIC_KEY_LEN);
+        } else if (written == EC_PUBLIC_KEY_LEN) {
+            /* Compressed key: strip the parity byte */
+            memcpy(bytes_out, pubkey + 1, EC_XONLY_PUBLIC_KEY_LEN);
+        } else {
+            ret = WALLY_EINVAL;
+        }
+    }
+    return ret;
+}
+
+int descriptor_get_musig_participant_keypath(
+    const struct wally_descriptor *descriptor,
+    size_t index, size_t participant_index,
+    uint32_t multi_index, uint32_t child_num,
+    unsigned char *pub_key_out, size_t pub_key_len,
+    unsigned char *fingerprint_out, size_t fingerprint_len,
+    uint32_t **path_out, size_t *path_len_out)
+{
+    const ms_node *k = get_musig_participant(descriptor, index, participant_index);
+    const uint32_t child_flags = BIP32_FLAG_STR_WILDCARD | BIP32_FLAG_STR_BARE |
+                                 BIP32_FLAG_STR_MULTIPATH;
+    const char *origin_str = NULL;
+    size_t origin_str_len = 0, origin_len = 0, child_len = 0, written;
+    uint32_t child_index = 0, path_index = 0;
+    ms_ctx ctx;
+    int ret;
+
+    if (path_out)
+        *path_out = NULL;
+    if (path_len_out)
+        *path_len_out = 0;
+    if (!k || !pub_key_out || pub_key_len != EC_PUBLIC_KEY_LEN ||
+        !fingerprint_out || fingerprint_len != BIP32_KEY_FINGERPRINT_LEN ||
+        !path_out || !path_len_out ||
+        !index_args_valid(descriptor, 0, multi_index, child_num))
+        return WALLY_EINVAL;
+
+    /* Derive the participant's public key, as for aggregation */
+    if ((ret = ctx_clone(descriptor, 0, multi_index, child_num, &ctx)) != WALLY_OK)
+        return ret;
+    ret = generate_script(&ctx, (ms_node *)k, pub_key_out, pub_key_len, &written);
+    ctx_clear(&ctx);
+    if (ret == WALLY_OK && written != EC_PUBLIC_KEY_LEN)
+        ret = WALLY_EINVAL; /* musig() participants are compressed keys */
+
+    memset(fingerprint_out, 0, fingerprint_len);
+    if (ret == WALLY_OK && k->flags & WALLY_MS_IS_PARENTED) {
+        ret = key_node_origin_fingerprint(descriptor, k, fingerprint_out, fingerprint_len);
+        origin_str = descriptor->src + (((uint64_t)k->number) >> 32u) + 10u;
+        origin_str_len = key_node_origin_path_str_len(k);
+    }
+
+    /* Compute the path length, then fetch the origin and child paths */
+    if (ret == WALLY_OK && origin_str_len)
+        ret = bip32_path_from_str_n_len(origin_str, origin_str_len,
+                                        0, 0, BIP32_FLAG_STR_BARE, &origin_len);
+    if (ret == WALLY_OK && k->child_path_len) {
+        if (k->flags & WALLY_MS_IS_RANGED)
+            child_index = child_num;
+        if (k->flags & WALLY_MS_IS_MULTIPATH)
+            path_index = multi_index;
+        ret = bip32_path_from_str_n_len(k->child_path, k->child_path_len,
+                                        child_index, path_index, child_flags,
+                                        &child_len);
+    }
+    if (ret != WALLY_OK || !(origin_len + child_len))
+        return ret;
+    if (!(*path_out = wally_malloc((origin_len + child_len) * sizeof(uint32_t))))
+        return WALLY_ENOMEM;
+    if (origin_len)
+        ret = bip32_path_from_str_n(origin_str, origin_str_len, 0, 0,
+                                    BIP32_FLAG_STR_BARE, *path_out,
+                                    origin_len, &written);
+    if (ret == WALLY_OK && child_len)
+        ret = bip32_path_from_str_n(k->child_path, k->child_path_len,
+                                    child_index, path_index, child_flags,
+                                    *path_out + origin_len, child_len, &written);
+    if (ret == WALLY_OK)
+        *path_len_out = origin_len + child_len;
+    else {
+        wally_free(*path_out);
+        *path_out = NULL;
+    }
+    return ret;
+}
+
 int wally_descriptor_get_taproot_merkle_root(
     const struct wally_descriptor *descriptor,
     uint32_t multi_index, uint32_t child_num, uint32_t flags,
