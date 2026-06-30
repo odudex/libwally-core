@@ -33,49 +33,75 @@ static int64_t thresh_weight_delta(const ms_satisfaction *sat, const ms_satisfac
            (int64_t)witness_weight(&dsat->witness);
 }
 
-/* Non-malleable sort key: (is_impossible, has_sig, weight_delta) ascending */
-static int thresh_cmp_full(size_t ia, size_t ib,
-                           const ms_satisfaction *sats,
-                           const ms_satisfaction *dissats)
+/* Precomputed sort key for a single thresh element. The key depends only on
+ * the element, so it can be computed once instead of in the O(n^2) sort. */
+struct thresh_key {
+    int imp;        /* sat is impossible (sorts last) */
+    int has_sig;    /* sat carries a signature (sorts after sig-less) */
+    int64_t delta;  /* weight(sat) - weight(dissat) */
+};
+
+static struct thresh_key thresh_make_key(const ms_satisfaction *sat,
+                                         const ms_satisfaction *dissat)
 {
-    int imp_a = (sats[ia].witness.kind == MS_WITNESS_IMPOSSIBLE) ? 1 : 0;
-    int imp_b = (sats[ib].witness.kind == MS_WITNESS_IMPOSSIBLE) ? 1 : 0;
-    if (imp_a != imp_b) return imp_a - imp_b;
-    int sig_a = sats[ia].has_sig ? 1 : 0;
-    int sig_b = sats[ib].has_sig ? 1 : 0;
-    if (sig_a != sig_b) return sig_a - sig_b;
-    int64_t wa = thresh_weight_delta(&sats[ia], &dissats[ia]);
-    int64_t wb = thresh_weight_delta(&sats[ib], &dissats[ib]);
-    return (wa > wb) - (wa < wb);
+    struct thresh_key k;
+    k.imp = sat->witness.kind == MS_WITNESS_IMPOSSIBLE ? 1 : 0;
+    k.has_sig = sat->has_sig ? 1 : 0;
+    k.delta = thresh_weight_delta(sat, dissat);
+    return k;
 }
 
-/* Malleable sort key: weight_delta only */
-static int thresh_cmp_mall(size_t ia, size_t ib,
-                           const ms_satisfaction *sats,
-                           const ms_satisfaction *dissats)
+/* Non-malleable order: (is_impossible, has_sig, weight_delta) ascending */
+static int thresh_cmp_full(const struct thresh_key *a, const struct thresh_key *b)
 {
-    int64_t wa = thresh_weight_delta(&sats[ia], &dissats[ia]);
-    int64_t wb = thresh_weight_delta(&sats[ib], &dissats[ib]);
-    return (wa > wb) - (wa < wb);
+    if (a->imp != b->imp) return a->imp - b->imp;
+    if (a->has_sig != b->has_sig) return a->has_sig - b->has_sig;
+    return (a->delta > b->delta) - (a->delta < b->delta);
 }
 
-/* Insertion sort on index array (ascending) */
+/* Malleable order: weight_delta only */
+static int thresh_cmp_mall(const struct thresh_key *a, const struct thresh_key *b)
+{
+    return (a->delta > b->delta) - (a->delta < b->delta);
+}
+
+/* Insertion sort on index array (ascending).
+ *
+ * Each element's sort key is computed once up front (O(n) weight passes)
+ * rather than re-derived for every comparison (O(n^2) weight passes). On OOM
+ * the key array is left NULL and the keys are computed on demand instead. */
 static void thresh_sort(size_t *indices, size_t n,
                         const ms_satisfaction *sats,
                         const ms_satisfaction *dissats, int mall)
 {
+    struct thresh_key *keys = n ? wally_malloc(n * sizeof(*keys)) : NULL;
+
+    for (size_t i = 0; keys && i < n; i++)
+        keys[i] = thresh_make_key(&sats[i], &dissats[i]);
+
     for (size_t i = 1; i < n; i++) {
         size_t key = indices[i];
         size_t j = i;
         while (j > 0) {
-            int cmp = mall ? thresh_cmp_mall(indices[j - 1], key, sats, dissats)
-                           : thresh_cmp_full(indices[j - 1], key, sats, dissats);
-            if (cmp <= 0) break;
+            struct thresh_key ka, kb;
+            const struct thresh_key *pa, *pb;
+            if (keys) {
+                pa = &keys[indices[j - 1]];
+                pb = &keys[key];
+            } else {
+                ka = thresh_make_key(&sats[indices[j - 1]], &dissats[indices[j - 1]]);
+                kb = thresh_make_key(&sats[key], &dissats[key]);
+                pa = &ka;
+                pb = &kb;
+            }
+            if ((mall ? thresh_cmp_mall(pa, pb) : thresh_cmp_full(pa, pb)) <= 0)
+                break;
             indices[j] = indices[j - 1];
             j--;
         }
         indices[j] = key;
     }
+    wally_free(keys);
 }
 
 /*
@@ -903,9 +929,9 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
                 /* Sort avail[] by witness weight ascending, keep k lightest */
                 for (size_t i = 1; i < navail; i++) {
                     size_t tmp = avail[i], j = i;
+                    size_t tmp_w = witness_weight(&sats[tmp].witness);
                     while (j > 0 &&
-                           witness_weight(&sats[avail[j - 1]].witness) >
-                           witness_weight(&sats[tmp].witness)) {
+                           witness_weight(&sats[avail[j - 1]].witness) > tmp_w) {
                         avail[j] = avail[j - 1];
                         j--;
                     }
@@ -1038,9 +1064,9 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
                 /* Sort avail[] by witness weight ascending, keep k lightest */
                 for (size_t i = 1; i < navail; i++) {
                     size_t tmp = avail[i], j = i;
+                    size_t tmp_w = witness_weight(&sats[tmp].witness);
                     while (j > 0 &&
-                           witness_weight(&sats[avail[j - 1]].witness) >
-                           witness_weight(&sats[tmp].witness)) {
+                           witness_weight(&sats[avail[j - 1]].witness) > tmp_w) {
                         avail[j] = avail[j - 1];
                         j--;
                     }
