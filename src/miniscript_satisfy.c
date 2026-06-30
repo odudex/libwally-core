@@ -267,22 +267,22 @@ static ms_satisfaction satisfaction_minimum_mall(ms_satisfaction a, ms_satisfact
 }
 
 /*
- * Append a single push item to a satisfaction's witness stack.
- * data == NULL / data_len == 0 pushes an empty item (OP_0 / false).
- * Consumes s; on OOM returns IMPOSSIBLE.
- *
- * Used by satisfaction_or_i to attach the IF/ELSE branch selector byte.
+ * Append a single push item to a satisfaction's witness stack, taking
+ * ownership of `data` (no copy). data == NULL / data_len == 0 pushes an
+ * empty item. Consumes s and `data`; on OOM frees `data` and returns
+ * IMPOSSIBLE.
  */
-static ms_satisfaction satisfaction_push_item(ms_satisfaction s,
-                                              const unsigned char *data,
-                                              size_t data_len)
+static ms_satisfaction satisfaction_push_item_take(ms_satisfaction s,
+                                                   unsigned char *data,
+                                                   size_t data_len)
 {
     size_t n;
     ms_witness_item *new_items;
-    unsigned char *item_data;
 
-    if (s.witness.kind != MS_WITNESS_STACK)
+    if (s.witness.kind != MS_WITNESS_STACK) {
+        wally_free(data);
         return s;
+    }
 
     n = s.witness.num_items;
 
@@ -293,6 +293,7 @@ static ms_satisfaction satisfaction_push_item(ms_satisfaction s,
                          s.witness.items_allocation_len * 2 : 4;
         new_items = wally_malloc(new_cap * sizeof(ms_witness_item));
         if (!new_items) {
+            wally_free(data);
             ms_satisfaction_free(&s);
             ms_satisfaction_init(&s, MS_WITNESS_IMPOSSIBLE);
             return s;
@@ -304,7 +305,28 @@ static ms_satisfaction satisfaction_push_item(ms_satisfaction s,
         s.witness.items_allocation_len = new_cap;
     }
 
-    item_data = NULL;
+    s.witness.items[n].data = data;
+    s.witness.items[n].data_len = data_len;
+    s.witness.num_items = n + 1;
+    return s;
+}
+
+/*
+ * Append a single push item to a satisfaction's witness stack, copying
+ * `data`. data == NULL / data_len == 0 pushes an empty item (OP_0 / false).
+ * Consumes s; on OOM returns IMPOSSIBLE.
+ *
+ * Used by satisfaction_or_i to attach the IF/ELSE branch selector byte.
+ */
+static ms_satisfaction satisfaction_push_item(ms_satisfaction s,
+                                              const unsigned char *data,
+                                              size_t data_len)
+{
+    unsigned char *item_data = NULL;
+
+    if (s.witness.kind != MS_WITNESS_STACK)
+        return s;
+
     if (data_len) {
         item_data = wally_malloc(data_len);
         if (!item_data) {
@@ -314,10 +336,7 @@ static ms_satisfaction satisfaction_push_item(ms_satisfaction s,
         }
         memcpy(item_data, data, data_len);
     }
-    s.witness.items[n].data = item_data;
-    s.witness.items[n].data_len = data_len;
-    s.witness.num_items = n + 1;
-    return s;
+    return satisfaction_push_item_take(s, item_data, data_len);
 }
 
 /*
@@ -926,10 +945,14 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
             entry.sat = satisfaction_push_item(entry.sat, NULL, 0);
             for (size_t i = 0; i < k; i++) {
                 size_t idx = avail[i];
-                if (sats[idx].witness.num_items > 0)
-                    entry.sat = satisfaction_push_item(entry.sat,
+                if (sats[idx].witness.num_items > 0) {
+                    /* Move the signature item into entry.sat (no copy) */
+                    entry.sat = satisfaction_push_item_take(entry.sat,
                         sats[idx].witness.items[0].data,
                         sats[idx].witness.items[0].data_len);
+                    sats[idx].witness.items[0].data = NULL;
+                    sats[idx].witness.items[0].data_len = 0;
+                }
                 ms_satisfaction_free(&sats[idx]);
             }
             entry.sat.has_sig = true;
@@ -1054,10 +1077,14 @@ void satisfy_node(const ms_node *node, const ms_satisfier *stfr,
                     bool chosen = (ai > 0 && avail[ai - 1] == i);
                     if (chosen) {
                         ai--;
-                        if (sats[i].witness.num_items > 0)
-                            entry.sat = satisfaction_push_item(entry.sat,
+                        if (sats[i].witness.num_items > 0) {
+                            /* Move the signature item into entry.sat (no copy) */
+                            entry.sat = satisfaction_push_item_take(entry.sat,
                                 sats[i].witness.items[0].data,
                                 sats[i].witness.items[0].data_len);
+                            sats[i].witness.items[0].data = NULL;
+                            sats[i].witness.items[0].data_len = 0;
+                        }
                     } else {
                         entry.sat = satisfaction_push_item(entry.sat, NULL, 0);
                     }
