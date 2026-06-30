@@ -927,8 +927,7 @@ WALLY_CORE_API int wally_musig_pubkeys_derive_then_agg(
     struct wally_musig_keyagg_cache **cache_out)
 {
     unsigned char *sorted_pubkeys = NULL;
-    struct ext_key *hdkey = NULL;
-    struct ext_key *child = NULL;
+    struct ext_key hdkey, child;
     size_t n_xpubs, i;
     int ret = WALLY_EINVAL;
 
@@ -949,22 +948,18 @@ WALLY_CORE_API int wally_musig_pubkeys_derive_then_agg(
         return WALLY_ENOMEM;
 
     for (i = 0; i < n_xpubs; i++) {
-        ret = bip32_key_unserialize_alloc(xpubs + i * BIP32_SERIALIZED_LEN,
-                                          BIP32_SERIALIZED_LEN, &hdkey);
+        ret = bip32_key_unserialize(xpubs + i * BIP32_SERIALIZED_LEN,
+                                    BIP32_SERIALIZED_LEN, &hdkey);
         if (ret != WALLY_OK)
             goto cleanup;
 
-        ret = bip32_key_from_parent_alloc(hdkey, child_num,
-                                          BIP32_FLAG_KEY_PUBLIC, &child);
-        bip32_key_free(hdkey);
-        hdkey = NULL;
+        ret = bip32_key_from_parent(&hdkey, child_num,
+                                    BIP32_FLAG_KEY_PUBLIC, &child);
         if (ret != WALLY_OK)
             goto cleanup;
 
         memcpy(sorted_pubkeys + i * EC_PUBLIC_KEY_LEN,
-               child->pub_key, EC_PUBLIC_KEY_LEN);
-        bip32_key_free(child);
-        child = NULL;
+               child.pub_key, EC_PUBLIC_KEY_LEN);
     }
 
     qsort(sorted_pubkeys, n_xpubs, EC_PUBLIC_KEY_LEN, musig2_keyagg_pubkey_cmp);
@@ -973,10 +968,7 @@ WALLY_CORE_API int wally_musig_pubkeys_derive_then_agg(
                                  agg_pk_out, agg_pk_out_len, cache_out);
 
 cleanup:
-    if (hdkey)
-        bip32_key_free(hdkey);
-    if (child)
-        bip32_key_free(child);
+    wally_clear_2(&hdkey, sizeof(hdkey), &child, sizeof(child));
     wally_free(sorted_pubkeys);
     return ret;
 }
