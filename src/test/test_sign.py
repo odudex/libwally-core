@@ -101,6 +101,23 @@ class SignTests(unittest.TestCase):
                 ret = wally_ec_public_key_verify(pub_key2, len(pub_key2))
                 self.assertEqual(ret, WALLY_OK)
 
+        # Invalid keys are rejected, including when no conversion is needed
+        bad_key, bad_key_len = make_cbuffer('02' + 'ff' * 32)
+        bad_unc, bad_unc_len = make_cbuffer('04' + 'ff' * 64)
+        for p, l in [(bad_key, bad_key_len), (bad_unc, bad_unc_len)]:
+            ret = wally_ec_public_key_compress(p, l, pub_key2, len(pub_key2))
+            self.assertEqual(ret, WALLY_EINVAL)
+            ret = wally_ec_public_key_decompress(p, l, pub_unc2, len(pub_unc2))
+            self.assertEqual(ret, WALLY_EINVAL)
+
+        # Invalid lengths are rejected
+        for fn, out in [(wally_ec_public_key_compress, pub_key2),
+                        (wally_ec_public_key_decompress, pub_unc2)]:
+            self.assertEqual(fn(None, 33, out, len(out)), WALLY_EINVAL)
+            self.assertEqual(fn(pub_key, 32, out, len(out)), WALLY_EINVAL)
+            self.assertEqual(fn(pub_key, len(pub_key), None, len(out)), WALLY_EINVAL)
+            self.assertEqual(fn(pub_key, len(pub_key), out, len(out) - 1), WALLY_EINVAL)
+
         set_fake_ec_nonce(None)
 
 
