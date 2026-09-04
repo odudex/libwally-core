@@ -4,6 +4,9 @@
 
 (Unreleased)
 
+### Changed
+- hmac: Derive the HMAC block size from the hash instead of the hash context layout.
+
 ### Fixed
 - build: Fix the mbedtls header define name in the CMake config template.
 
