@@ -1,5 +1,12 @@
 # Changes
 
+## Version 1.5.7
+
+(Unreleased)
+
+### Fixed
+- build: Fix the mbedtls header define name in the CMake config template.
+
 ## Version 1.5.6
 
 ### Fixed
