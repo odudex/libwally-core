@@ -4,6 +4,9 @@
 
 (Unreleased)
 
+### Added
+- build: Add `--enable-psa-crypto` to hash via the PSA Crypto API (TF-PSA-Crypto/Mbed TLS 4, ESP-IDF 6).
+
 ### Changed
 - hmac: Derive the HMAC block size from the hash instead of the hash context layout.
 
