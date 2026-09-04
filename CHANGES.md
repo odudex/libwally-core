@@ -4,6 +4,9 @@
 
 (Unreleased)
 
+### Added
+- build: Add `--enable-psa-crypto` to hash via the PSA Crypto API (TF-PSA-Crypto/Mbed TLS 4, ESP-IDF 6).
+
 ### Fixed
 - build: CMake no longer selects the mbedtls hashing backend just because its headers are installed; enable it with `WALLYCORE_ENABLE_MBED_TLS`, as with `--enable-mbed-tls`.
 
