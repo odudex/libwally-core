@@ -615,6 +615,11 @@ int wally_init(uint32_t flags)
         return WALLY_EINVAL;
 
     if (!wally_init_done) {
+#if defined(CCAN_CRYPTO_SHA256_USE_PSA) || defined(CCAN_CRYPTO_SHA512_USE_PSA)
+        /* Idempotent; ESP-IDF calls this at boot but other platforms may not */
+        if (psa_crypto_init() != PSA_SUCCESS)
+            return WALLY_ERROR;
+#endif
         sha256_optimize();
         wally_init_done = true;
     }
