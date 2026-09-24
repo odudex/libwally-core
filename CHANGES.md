@@ -1,5 +1,12 @@
 # Changes
 
+## Version 1.5.7
+
+(Unreleased)
+
+### Fixed
+- build: CMake no longer selects the mbedtls hashing backend just because its headers are installed; enable it with `WALLYCORE_ENABLE_MBED_TLS`, as with `--enable-mbed-tls`.
+
 ## Version 1.5.6
 
 ### Fixed
