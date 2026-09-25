@@ -722,6 +722,21 @@ class DescriptorTests(unittest.TestCase):
             if ret == WALLY_OK:
                 wally_descriptor_free(d)
 
+    @malloc_fail(range(1, 32))
+    def test_taproot_control_block_malloc_fail(self):
+        """Test that control block allocation failures return no length"""
+        buf, buf_len = make_cbuffer('00' * 1024)
+        d = c_void_p()
+        ret = wally_descriptor_parse('tr(x_only,pk(xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB/0/*))',
+                                     self.keys, NETWORK_BTC_MAIN, 0, d)
+        self.assertIn(ret, [WALLY_OK, WALLY_ENOMEM])
+        if ret == WALLY_OK:
+            ret, written = wally_descriptor_get_taproot_control_block(
+                d, 0, 0, 0, 0, buf, buf_len)
+            self.assertIn(ret, [WALLY_OK, WALLY_ENOMEM])
+            self.assertEqual(written, 33 if ret == WALLY_OK else 0)
+            wally_descriptor_free(d)
+
     def test_taproot_bad_args(self):
         buf, buf_len = make_cbuffer('00' * 1024)
         d = c_void_p()
@@ -752,6 +767,16 @@ class DescriptorTests(unittest.TestCase):
                 merkle_internal_args = (args[0],) + args[2:-1] + (32,)
                 ret = wally_descriptor_get_taproot_merkle_root(*merkle_internal_args)
                 self.assertEqual(ret, WALLY_EINVAL)
+
+        for out, out_len in [
+            (None, buf_len),  # NULL output buff
+            (buf,  0),        # Empty output buff
+        ]:
+            args = (d, 0, 0, 0, 0, out, out_len)
+            ret = wally_descriptor_get_taproot_control_block(*args)
+            self.assertEqual(ret, (WALLY_EINVAL, 0))
+            ret = wally_descriptor_get_taproot_leaf_script(*args)
+            self.assertEqual(ret, (WALLY_EINVAL, 0))
 
         ret = wally_descriptor_get_taproot_num_leaves(None) # NULL descriptor
         self.assertEqual(ret, (WALLY_EINVAL, 0))
