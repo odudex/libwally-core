@@ -792,6 +792,18 @@ class BIP32Tests(unittest.TestCase):
             self.assertEqual(ret, WALLY_OK)
             self.assertEqual(h(key_out.pub_key), h(expected.pub_key))
 
+            # Deriving in two steps gives the same key and tweak sum
+            priv_flags = [FLAG_KEY_TWEAK_SUM] if parent is priv else []
+            for step_flags in [flags] + priv_flags:
+                step, step_out = ext_key(), ext_key()
+                for p, n, out in [(parent, 0, step), (step, 8, step_out)]:
+                    ret = bip32_key_with_tweak_from_parent_path(
+                        byref(p), self.path_to_c([n]), 1, step_flags, byref(out))
+                    self.assertEqual(ret, WALLY_OK)
+                self.assertEqual(h(step_out.pub_key), h(expected.pub_key))
+                self.assertEqual(h(step_out.pub_key_tweak_sum),
+                                 h(key_out.pub_key_tweak_sum))
+
 
 if __name__ == '__main__':
     unittest.main()

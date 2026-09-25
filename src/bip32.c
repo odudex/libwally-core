@@ -858,22 +858,13 @@ int bip32_key_with_tweak_from_parent_path(const struct ext_key *hdkey,
 #ifndef BUILD_ELEMENTS
     return WALLY_ERROR;
 #else
-    int ret;
-
     if (!(flags & BIP32_FLAG_KEY_TWEAK_SUM))
-        return WALLY_EINVAL; /* The tweak sum is required to compute the key */
+        return WALLY_EINVAL; /* The tweak sum must be requested */
 
-    ret = bip32_key_from_parent_path(hdkey, child_path,
-                                     child_path_len, flags, output);
-    if (ret == WALLY_OK) {
-        ret = wally_ec_public_key_tweak(hdkey->pub_key, sizeof(hdkey->pub_key),
-                                        output->pub_key_tweak_sum,
-                                        sizeof(output->pub_key_tweak_sum),
-                                        output->pub_key, sizeof(output->pub_key));
-        if (ret != WALLY_OK)
-            wipe_key_fail(output);
-    }
-    return ret;
+    /* The tweak sum accumulates onto hdkey's, whose pub_key already
+     * includes it: the derived pub_key is hdkey's plus the path tweaks */
+    return bip32_key_from_parent_path(hdkey, child_path,
+                                      child_path_len, flags, output);
 #endif /* BUILD_ELEMENTS */
 }
 
