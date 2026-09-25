@@ -286,6 +286,13 @@ test_tx_LDADD = $(lib_LTLIBRARIES) @CTEST_EXTRA_STATIC@
 if PYTHON_MANYLINUX
 test_tx_LDADD += $(PYTHON_LIBS)
 endif
+if USE_PSA_CRYPTO
+# Compiles the library itself (as the amalgamation) with PSA failures injected
+TESTS += test_psa_faults
+noinst_PROGRAMS += test_psa_faults
+test_psa_faults_SOURCES = ctest/test_psa_faults.c
+test_psa_faults_CFLAGS = -I$(top_srcdir) -I$(srcdir) -I$(srcdir)/ccan -I$(top_srcdir)/src/secp256k1/include $(AM_CFLAGS)
+endif
 TESTS += test_descriptor
 noinst_PROGRAMS += test_descriptor
 test_descriptor_SOURCES = ctest/test_descriptor.c

@@ -115,6 +115,7 @@ AM_CONDITIONAL([BUILD_ELEMENTS], [test "x$elements" = "xyes"])
 AM_CONDITIONAL([WALLY_ABI_NO_ELEMENTS], [test "x$elements_abi" = "xno"])
 AM_CONDITIONAL([BUILD_STANDARD_SECP], [test "x$standard_secp" = "xyes"])
 AM_CONDITIONAL([BUILD_MINIMAL], [test "x$minimal" = "xyes"])
+AM_CONDITIONAL([USE_PSA_CRYPTO], [test "x$psa_crypto" = "xyes"])
 
 AC_C_BIGENDIAN()
 AC_C_INLINE
