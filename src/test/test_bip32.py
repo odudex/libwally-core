@@ -776,6 +776,22 @@ class BIP32Tests(unittest.TestCase):
                 self.assertEqual(ret, WALLY_OK)
                 self.assertEqual(h(key_out.pub_key_tweak_sum), utf8(expected))
 
+        # bip32_key_with_tweak_from_parent_path requires FLAG_KEY_TWEAK_SUM
+        path = self.path_to_c([0, 8])
+        expected, _ = self.derive_key_by_path(pub, [0, 8], FLAG_KEY_PUBLIC)
+        for parent in [pub, priv]:
+            key_out = ext_key()
+            for flags in [0, FLAG_KEY_PUBLIC,
+                          FLAG_KEY_PUBLIC | BIP32_FLAG_SKIP_HASH]:
+                ret = bip32_key_with_tweak_from_parent_path(byref(parent), path, 2,
+                                                            flags, byref(key_out))
+                self.assertEqual(ret, WALLY_EINVAL)
+            flags = FLAG_KEY_PUBLIC | FLAG_KEY_TWEAK_SUM
+            ret = bip32_key_with_tweak_from_parent_path(byref(parent), path, 2,
+                                                        flags, byref(key_out))
+            self.assertEqual(ret, WALLY_OK)
+            self.assertEqual(h(key_out.pub_key), h(expected.pub_key))
+
 
 if __name__ == '__main__':
     unittest.main()

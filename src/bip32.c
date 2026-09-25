@@ -860,8 +860,8 @@ int bip32_key_with_tweak_from_parent_path(const struct ext_key *hdkey,
 #else
     int ret;
 
-    if (!(flags & (BIP32_FLAG_KEY_TWEAK_SUM | BIP32_FLAG_KEY_PUBLIC)))
-        return WALLY_EINVAL;
+    if (!(flags & BIP32_FLAG_KEY_TWEAK_SUM))
+        return WALLY_EINVAL; /* The tweak sum is required to compute the key */
 
     ret = bip32_key_from_parent_path(hdkey, child_path,
                                      child_path_len, flags, output);
