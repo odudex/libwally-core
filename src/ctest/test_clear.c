@@ -10,6 +10,7 @@
 #include <wally_bip39.h>
 #include <wally_crypto.h>
 #include <wally_elements.h>
+#include <wally_psbt.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -56,6 +57,8 @@ extern void __asan_unpoison_memory_region(void const volatile *addr, size_t size
 /* OSX Needs a minimum of 512K of stack per thread */
 #define PTHREAD_STACK_MIN 512u * 1024u
 #endif
+/* Creating rangeproofs when blinding PSETs needs more than e.g. Linux's minimum */
+#define STACK_SIZE (PTHREAD_STACK_MIN > 256u * 1024u ? PTHREAD_STACK_MIN : 256u * 1024u)
 
 /* Global alternate stack pointer */
 static unsigned char *gstack;
@@ -114,7 +117,7 @@ static bool in_stack(const char *caller, volatile const void *search, size_t len
 {
     static size_t i;
 
-    for (i = 0; i < PTHREAD_STACK_MIN - len - 1; ++i)
+    for (i = 0; i < STACK_SIZE - len - 1; ++i)
         if (!wally_memcmp(gstack + i, (const void *)search, len)) {
             if (caller) {
                 printf("Found %s secret at stack position %ld and base %p\n", caller, (long)i, (void *)gstack);
@@ -305,6 +308,77 @@ static bool test_base58_from_bytes(void)
     return !found;
 }
 
+#ifdef BUILD_ELEMENTS
+/* A PSET with one confidential input of 100000 sats (asset 0x25*32,
+ * abf 0x11*32, vbf 0x22*32) and one output to blind */
+static const char *BLIND_PSET = "cHNldP8BAgQCAAAAAQQBAQEFAQEBBgEDAfsEAgAAAAABAVoLXZOQQg73GhcdncZ2IRsoX8K03raepIsqn5inmqHxmywJwdRkuWPOKf3N4PCobr4N/9N0h+8Sxr9vKEZ7yk0uEUIAFgAUMzMzMzMzMzMzMzMzMzMzMzMzMzMBDiBERERERERERERERERERERERERERERERERERERERERERAEPBAAAAAAAAQMIoIYBAAAAAAABBBYAFDMzMzMzMzMzMzMzMzMzMzMzMzMzB/wEcHNldAIgJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUH/ARwc2V0BiECmsIDNes4do0gUr4du8PI9heEB0WOUea0rSLx2RdYiVsH/ARwc2V0CAQAAAAAAA==";
+static const unsigned char BLIND_VALUE[9] = {
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x86, 0xa0
+};
+/* Scalars computed while blinding with entropy 0x01..0x20 repeated */
+static const unsigned char BLIND_SECRETS[4][32] = {
+    { /* Input scalar */
+        0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
+        0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xed, 0xe3,
+        0xbf, 0x88, 0xbd, 0xfc, 0x93, 0xb0, 0x78, 0xfb,
+        0xf0, 0xfa, 0xce, 0x27, 0x28, 0x0d, 0x8c, 0x38
+    }, { /* Output scalar */
+        0xb2, 0xdc, 0x05, 0x2e, 0x57, 0x80, 0xa9, 0xd2,
+        0xfc, 0x25, 0x4e, 0x77, 0xa0, 0xc9, 0xf5, 0x0f,
+        0xae, 0xfd, 0x79, 0x9d, 0xd3, 0x95, 0x40, 0xac,
+        0x14, 0xc4, 0xba, 0xde, 0x90, 0x12, 0x26, 0x57
+    }, { /* Output scalar - input scalar */
+        0xe6, 0x0f, 0x38, 0x61, 0x8a, 0xb3, 0xdd, 0x06,
+        0x2f, 0x58, 0x81, 0xaa, 0xd3, 0xfd, 0x07, 0x2a,
+        0xaa, 0x23, 0x98, 0x87, 0xef, 0x2d, 0x67, 0xeb,
+        0xe3, 0x9c, 0x4b, 0x44, 0x38, 0x3a, 0xdb, 0x60
+    }, { /* Final vbf */
+        0x1a, 0xf2, 0xca, 0xa2, 0x7a, 0x52, 0x2a, 0x01,
+        0xd9, 0xb1, 0x89, 0x61, 0x39, 0x11, 0x07, 0xe4,
+        0x21, 0x9d, 0x57, 0x72, 0xd5, 0x31, 0x4f, 0x67,
+        0xf5, 0x50, 0x2e, 0x64, 0xb5, 0x19, 0x85, 0x01
+    }
+};
+
+static bool test_psbt_blind(void)
+{
+    static struct wally_psbt *psbt;
+    static struct wally_map values, vbfs, assets, abfs;
+    static unsigned char asset[32], abf[32], vbf[32], entropy[32 * 5];
+    static size_t i;
+    static bool ok;
+
+    memset(asset, 0x25, sizeof(asset));
+    memset(abf, 0x11, sizeof(abf));
+    memset(vbf, 0x22, sizeof(vbf));
+    for (i = 0; i < sizeof(entropy); ++i)
+        entropy[i] = (i % 32) + 1;
+
+    ok = wally_psbt_from_base64(BLIND_PSET, 0, &psbt) == WALLY_OK &&
+         wally_map_init(1, NULL, &values) == WALLY_OK &&
+         wally_map_init(1, NULL, &vbfs) == WALLY_OK &&
+         wally_map_init(1, NULL, &assets) == WALLY_OK &&
+         wally_map_init(1, NULL, &abfs) == WALLY_OK &&
+         wally_map_add_integer(&values, 0, BLIND_VALUE, sizeof(BLIND_VALUE)) == WALLY_OK &&
+         wally_map_add_integer(&vbfs, 0, vbf, sizeof(vbf)) == WALLY_OK &&
+         wally_map_add_integer(&assets, 0, asset, sizeof(asset)) == WALLY_OK &&
+         wally_map_add_integer(&abfs, 0, abf, sizeof(abf)) == WALLY_OK &&
+         wally_psbt_blind(psbt, &values, &vbfs, &assets, &abfs,
+                          entropy, sizeof(entropy), WALLY_PSET_BLIND_ALL,
+                          0, NULL) == WALLY_OK;
+
+    for (i = 0; ok && i < sizeof(BLIND_SECRETS) / sizeof(BLIND_SECRETS[0]); ++i)
+        ok = !in_stack("wally_psbt_blind", BLIND_SECRETS[i], sizeof(BLIND_SECRETS[i]));
+
+    wally_map_clear(&values);
+    wally_map_clear(&vbfs);
+    wally_map_clear(&assets);
+    wally_map_clear(&abfs);
+    wally_psbt_free(psbt);
+    return ok;
+}
+#endif /* BUILD_ELEMENTS */
+
 static void *run_tests(void *passed_stack)
 {
     if (passed_stack != gstack) {
@@ -315,7 +389,7 @@ static void *run_tests(void *passed_stack)
 #define RUN(t) if (!t()) { printf(#t " wally_clear() test failed!\n"); return gstack; }
 
     /* Due to the nature of the test reading poisoned bytes off the custom stack will trigger ASAN */
-    ASAN_UNPOISON_MEMORY_REGION(passed_stack, PTHREAD_STACK_MIN);
+    ASAN_UNPOISON_MEMORY_REGION(passed_stack, STACK_SIZE);
     if (!test_search()) {
         /* Usually means the optimizer has beaten our efforts to fight it,
          * or the compiler doesn't support e.g. no-optimize attributes. In
@@ -325,30 +399,36 @@ static void *run_tests(void *passed_stack)
         return NULL; /* Don't fail test runs where the optimizer has won */
     }
 
-    ASAN_UNPOISON_MEMORY_REGION(passed_stack, PTHREAD_STACK_MIN);
+    ASAN_UNPOISON_MEMORY_REGION(passed_stack, STACK_SIZE);
     RUN(test_bip39);
 
-    ASAN_UNPOISON_MEMORY_REGION(passed_stack, PTHREAD_STACK_MIN);
+    ASAN_UNPOISON_MEMORY_REGION(passed_stack, STACK_SIZE);
     RUN(test_bip32_from_seed);
 
-    ASAN_UNPOISON_MEMORY_REGION(passed_stack, PTHREAD_STACK_MIN);
+    ASAN_UNPOISON_MEMORY_REGION(passed_stack, STACK_SIZE);
     RUN(test_ec_private_key_verify);
 
-    ASAN_UNPOISON_MEMORY_REGION(passed_stack, PTHREAD_STACK_MIN);
+    ASAN_UNPOISON_MEMORY_REGION(passed_stack, STACK_SIZE);
     RUN(test_ec_sig_from_bytes);
 
-    ASAN_UNPOISON_MEMORY_REGION(passed_stack, PTHREAD_STACK_MIN);
+    ASAN_UNPOISON_MEMORY_REGION(passed_stack, STACK_SIZE);
     RUN(test_hmac_sha256);
 
 #ifdef BUILD_ELEMENTS
-    ASAN_UNPOISON_MEMORY_REGION(passed_stack, PTHREAD_STACK_MIN);
+    ASAN_UNPOISON_MEMORY_REGION(passed_stack, STACK_SIZE);
     RUN(test_elip150_private_key);
 
-    ASAN_UNPOISON_MEMORY_REGION(passed_stack, PTHREAD_STACK_MIN);
+    ASAN_UNPOISON_MEMORY_REGION(passed_stack, STACK_SIZE);
     RUN(test_asset_scalar_offset);
 #endif /* BUILD_ELEMENTS */
-    ASAN_UNPOISON_MEMORY_REGION(passed_stack, PTHREAD_STACK_MIN);
+
+    ASAN_UNPOISON_MEMORY_REGION(passed_stack, STACK_SIZE);
     RUN(test_base58_from_bytes);
+
+#ifdef BUILD_ELEMENTS
+    ASAN_UNPOISON_MEMORY_REGION(passed_stack, STACK_SIZE);
+    RUN(test_psbt_blind);
+#endif /* BUILD_ELEMENTS */
 
     return NULL;
 }
@@ -366,14 +446,14 @@ int main(void)
     void *tests_ok = &gstack; /* Anything non-null */
     int ret;
 
-    gstack = checked_malloc(PTHREAD_STACK_MIN);
+    gstack = checked_malloc(STACK_SIZE);
     gbytes = checked_malloc(64u * 1024u);
 
     ret = pthread_attr_init(&attr);
     if (ret)
         return error("pthread_attr_init", ret);
 
-    ret = pthread_attr_setstack(&attr, gstack, PTHREAD_STACK_MIN);
+    ret = pthread_attr_setstack(&attr, gstack, STACK_SIZE);
     if (ret)
         return error("pthread_attr_setstack", ret);
 
