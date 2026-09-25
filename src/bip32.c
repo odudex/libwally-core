@@ -801,6 +801,9 @@ int bip32_key_from_parent_path(const struct ext_key *hdkey,
             return WALLY_EINVAL; /* Unsupported derivation */
     }
 
+    /* Derivation doesn't set the padding bytes, which we copy to key_out */
+    wally_clear(tmp, sizeof(tmp));
+
     for (i = 0; i < child_path_len; ++i) {
         struct ext_key *derived = &tmp[tmp_idx];
         uint32_t derivation_flags = flags;
