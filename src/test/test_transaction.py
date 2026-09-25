@@ -798,6 +798,56 @@ class TransactionTests(unittest.TestCase):
             ret = wally_tx_get_input_signature_hash(*args)
             self.assertEqual(ret, WALLY_EINVAL)
 
+    def test_elements_rangeproof_signature_hash_cache(self):
+        """Test that caching doesn't change Elements RANGEPROOF signature hashes"""
+        if not wally_is_elements_build()[1]:
+            self.skipTest('Elements support not enabled')
+
+        tx_p = pointer(wally_tx())
+        self.assertEqual(wally_tx_init_alloc(2, 0, 1, 2, tx_p), WALLY_OK)
+        tx = tx_p[0]
+        txhash, txhash_len = make_cbuffer('11' * 32)
+        ret = wally_tx_add_elements_raw_input(tx, txhash, txhash_len, 0, 0xffffffff,
+                                              None, 0, None, None, 0, None, 0, None, 0,
+                                              None, 0, None, 0, None, 0, None, 0)
+        self.assertEqual(ret, WALLY_OK)
+        script, script_len = make_cbuffer('0014' + '22' * 20)
+        asset, asset_len = make_cbuffer('01' + '33' * 32)
+        value, value_len = make_cbuffer('01' + '00' * 6 + '03e8')
+        for proof_hex in ['44', '55']:
+            proof, proof_len = make_cbuffer(proof_hex * 8)
+            ret = wally_tx_add_elements_raw_output(tx, script, script_len, asset, asset_len,
+                                                   value, value_len, None, 0,
+                                                   proof, proof_len, proof, proof_len, 0)
+            self.assertEqual(ret, WALLY_OK)
+
+        values = pointer(wally_map())
+        self.assertEqual(wally_map_init_alloc(1, None, values), WALLY_OK)
+        wally_map_add_integer(values, 0, value, value_len)
+
+        def get_sighash(sighash, cache):
+            bytes_out, out_len = make_cbuffer('00'*32)
+            ret = wally_tx_get_input_signature_hash(tx, 0, None, None, values,
+                                                    script, script_len, 0, 0xffffffff,
+                                                    None, 0, None, 0,
+                                                    sighash, SIGTYPE_SW_V0, cache,
+                                                    bytes_out, out_len)
+            self.assertEqual(ret, WALLY_OK)
+            return h(bytes_out[:out_len])
+
+        ALL, ACP, RANGEPROOF = 0x01, 0x80, 0x40
+        for sighashes in [
+            [ALL | RANGEPROOF],
+            [ALL | ACP | RANGEPROOF],
+            [ALL, ALL | RANGEPROOF, ALL | ACP | RANGEPROOF],
+        ]:
+            cache = pointer(wally_map())
+            self.assertEqual(wally_map_init_alloc(0, None, cache), WALLY_OK)
+            for sighash in sighashes:
+                expected = get_sighash(sighash, None)
+                self.assertEqual(get_sighash(sighash, cache), expected)
+            wally_map_free(cache)
+
     def test_elip203(self):
         """Tests for deserializing ELIP203 test vectors"""
         if not wally_is_elements_build()[1]:
