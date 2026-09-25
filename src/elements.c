@@ -456,15 +456,19 @@ int wally_asset_unblind_with_nonce(const unsigned char *nonce_hash, size_t nonce
                                            msg_commitment, sizeof(msg_commitment));
         if (ret != WALLY_OK || memcmp(commitment, msg_commitment, commitment_len)) {
 mismatch:
-            wally_clear_4(msg_commitment, sizeof(msg_commitment),
-                          msg_generator, sizeof(msg_generator),
-                          asset_out, asset_out_len, abf_out, abf_out_len);
+            wally_clear_2(msg_commitment, sizeof(msg_commitment),
+                          msg_generator, sizeof(msg_generator));
             ret = WALLY_ERROR;
             goto cleanup;
         }
     }
 
 cleanup:
+    if (ret == WALLY_ERROR) {
+        /* The proof rewound but didn't unblind: wipe any recovered data */
+        wally_clear_4(asset_out, asset_out_len, abf_out, abf_out_len,
+                      vbf_out, vbf_out_len, value_out, sizeof(*value_out));
+    }
     wally_clear_3(&gen, sizeof(gen), &commit, sizeof(commit),
                   message, sizeof(message));
     return ret;
