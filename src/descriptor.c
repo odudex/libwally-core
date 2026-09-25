@@ -727,8 +727,11 @@ static int node_derive_key(ms_ctx* ctx, const ms_node* node,
             const uint32_t path_flags = BIP32_FLAG_STR_WILDCARD |
                                         BIP32_FLAG_STR_BARE |
                                         BIP32_FLAG_STR_MULTIPATH;
-            const uint32_t derive_flags = flags & (BIP32_FLAG_SKIP_HASH |
-                                                   BIP32_FLAG_KEY_PUBLIC);
+            /* Public parent keys can only derive public children */
+            const bool is_public = node->kind == KIND_BIP32_PUBLIC_KEY;
+            const uint32_t derive_flags = (flags & (BIP32_FLAG_SKIP_HASH |
+                                                    BIP32_FLAG_KEY_PUBLIC)) |
+                                          (is_public ? BIP32_FLAG_KEY_PUBLIC : 0);
             const bool is_ranged = node->flags & WALLY_MS_IS_RANGED;
             const bool is_multi = node->flags & WALLY_MS_IS_MULTIPATH;
             struct ext_key derived;

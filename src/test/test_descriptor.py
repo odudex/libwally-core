@@ -610,6 +610,29 @@ class DescriptorTests(unittest.TestCase):
             self.assertEqual(bytes(out), bytes(sizeof(out)))  # Zeroes
         wally_descriptor_free(d)
 
+    def test_derive_bip32_key_public(self):
+        """Test deriving from an xpub with a child path doesn't require FLAG_KEY_PUBLIC"""
+        xpub = 'xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB'
+        parent, derived = ext_key(), ext_key()
+        ret = bip32_key_from_base58(xpub, byref(parent))
+        self.assertEqual(ret, WALLY_OK)
+        ret = bip32_key_from_parent_path_str(byref(parent), '0/5', 0,
+                                             FLAG_KEY_PUBLIC, byref(derived))
+        self.assertEqual(ret, WALLY_OK)
+        ret, expected = bip32_key_to_base58(byref(derived), FLAG_KEY_PUBLIC)
+        self.assertEqual(ret, WALLY_OK)
+        d = c_void_p()
+        ret = wally_descriptor_parse(f'pkh({xpub}/0/*)', None, NETWORK_NONE, 0, d)
+        self.assertEqual(ret, WALLY_OK)
+        for flags in [FLAG_KEY_PRIVATE, FLAG_KEY_PUBLIC]:
+            out = ext_key()
+            ret = wally_descriptor_derive_bip32_key(d, 0, 0, 0, 5, flags, byref(out))
+            self.assertEqual(ret, WALLY_OK)
+            self.assertEqual(out.priv_key[0], FLAG_KEY_PUBLIC)
+            ret, key_str = bip32_key_to_base58(byref(out), FLAG_KEY_PUBLIC)
+            self.assertEqual((ret, key_str), (WALLY_OK, expected))
+        wally_descriptor_free(d)
+
     def test_wrappers(self):
         """Test miniscript wrapper expressions (a:, s:, c:, d:, v:, j:, n:, l:, u:, t:)"""
         script, script_len = make_cbuffer('00' * 256 * 2)
