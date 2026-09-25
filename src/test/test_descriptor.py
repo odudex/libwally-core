@@ -181,6 +181,32 @@ class DescriptorTests(unittest.TestCase):
         self.assertEqual(addrs[0], utf8('3ETTzkMnuA4PguZeWYtdCT6Rva3yTHATyP'))
         wally_descriptor_free(d)
 
+        # Bitcoin taproot cannot be used on Elements networks, since
+        # Elements tweaks taproot keys differently
+        k = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
+        for descriptor in [f'tr({k})', f'tr({k},pk({k}))']:
+            for network in [NETWORK_LIQUID, NETWORK_LIQUID_REG]:
+                ret = wally_descriptor_parse(descriptor, None, network, 0, d)
+                self.assertEqual(ret, WALLY_EINVAL)
+            ret = wally_descriptor_parse(descriptor, None, NETWORK_NONE, 0, d)
+            self.assertEqual(ret, WALLY_OK)
+            ret = wally_descriptor_set_network(d, NETWORK_LIQUID)
+            self.assertEqual(ret, WALLY_EINVAL)
+            ret = wally_descriptor_set_network(d, NETWORK_BTC_MAIN)
+            self.assertEqual(ret, WALLY_OK)
+            wally_descriptor_free(d)
+            if wally_is_elements_build()[1]:
+                for descriptor, flags in [(descriptor, AS_ELEMENTS),
+                                          ('el' + descriptor, 0)]:
+                    ret = wally_descriptor_parse(descriptor, None,
+                                                 NETWORK_LIQUID, flags, d)
+                    self.assertEqual(ret, WALLY_OK)
+                    wally_descriptor_free(d)
+        # Non-taproot descriptors are unaffected
+        ret = wally_descriptor_parse(f'wpkh({k})', None, NETWORK_LIQUID, 0, d)
+        self.assertEqual(ret, WALLY_OK)
+        wally_descriptor_free(d)
+
     def test_descriptor_to_addresses(self):
         addrs_len = 64
         addrs = (c_char_p * addrs_len)()
