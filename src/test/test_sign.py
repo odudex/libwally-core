@@ -425,8 +425,8 @@ class SignTests(unittest.TestCase):
 
         self.assertEqual(sub(None, zero), (WALLY_EINVAL, zero_hex))
         self.assertEqual(sub(zero, None), (WALLY_EINVAL, zero_hex))
-        self.assertEqual(add(zero, bad), (WALLY_ERROR, zero_hex))
-        self.assertEqual(add(bad, zero), (WALLY_ERROR, zero_hex))
+        self.assertEqual(sub(zero, bad), (WALLY_ERROR, zero_hex))
+        self.assertEqual(sub(bad, zero), (WALLY_ERROR, zero_hex))
         self.assertEqual(sub(zero, zero), (WALLY_OK, zero_hex))
         self.assertEqual(sub(zero, scalar), (WALLY_OK, negative_hex))
         self.assertEqual(sub(zero, negative), (WALLY_OK, scalar_hex))
