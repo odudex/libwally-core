@@ -523,6 +523,7 @@ int wally_ec_scalar_add(const unsigned char *scalar, size_t scalar_len,
                         unsigned char *bytes_out, size_t len)
 {
     unsigned char tmp[EC_SCALAR_LEN];
+    int ret;
 
     if (!check_scalar_op_args(scalar, scalar_len, operand, operand_len, bytes_out, len))
         return WALLY_EINVAL;
@@ -546,14 +547,15 @@ int wally_ec_scalar_add(const unsigned char *scalar, size_t scalar_len,
     /* Check for addition of the scalars inverse */
     memcpy(tmp, operand, len);
     if (!seckey_negate(tmp))
-        return WALLY_ERROR; /* Outside the group order */
-
-    if (!memcmp(scalar, tmp, len)) {
-        /* X + -X = 0 */
-        return WALLY_OK; /* bytes_out zeroed above */
+        ret = WALLY_ERROR; /* Outside the group order */
+    else if (!memcmp(scalar, tmp, len))
+        ret = WALLY_OK; /* X + -X = 0: bytes_out zeroed above */
+    else {
+        memcpy(bytes_out, scalar, len);
+        ret = seckey_tweak_add(bytes_out, operand) ? WALLY_OK : WALLY_ERROR;
     }
-    memcpy(bytes_out, scalar, len);
-    return seckey_tweak_add(bytes_out, operand) ? WALLY_OK : WALLY_ERROR;
+    wally_clear(tmp, sizeof(tmp));
+    return ret;
 }
 
 int wally_ec_scalar_add_to(unsigned char *scalar, size_t scalar_len,
@@ -572,6 +574,7 @@ int wally_ec_scalar_subtract(const unsigned char *scalar, size_t scalar_len,
                              unsigned char *bytes_out, size_t len)
 {
     unsigned char tmp[EC_SCALAR_LEN];
+    int ret;
 
     if (!check_scalar_op_args(scalar, scalar_len, operand, operand_len, bytes_out, len))
         return WALLY_EINVAL;
@@ -600,9 +603,13 @@ int wally_ec_scalar_subtract(const unsigned char *scalar, size_t scalar_len,
     /* Implement as X + (-Y) */
     memcpy(tmp, operand, len);
     if (!seckey_negate(tmp))
-        return WALLY_ERROR; /* Outside the group order */
-    memcpy(bytes_out, scalar, len);
-    return seckey_tweak_add(bytes_out, tmp) ? WALLY_OK : WALLY_ERROR;
+        ret = WALLY_ERROR; /* Outside the group order */
+    else {
+        memcpy(bytes_out, scalar, len);
+        ret = seckey_tweak_add(bytes_out, tmp) ? WALLY_OK : WALLY_ERROR;
+    }
+    wally_clear(tmp, sizeof(tmp));
+    return ret;
 }
 
 int wally_ec_scalar_subtract_from(unsigned char *scalar, size_t scalar_len,
