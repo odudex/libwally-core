@@ -562,6 +562,45 @@ class PSBTTests(unittest.TestCase):
         serialized = self.to_base64(psbt, None, SERIALIZE_FLAG_REDUNDANT)
         self.assertNotEqual(serialized, b64)
 
+    def test_taproot_leaf_hashes(self):
+        """Test parsing taproot BIP32 derivation leaf hashes"""
+        b64 = 'cHNidP8BAKACAAAAAqsJSaCMWvfEm4IS9Bfi8Vqz9cM9zxU4IagTn4d6W3vkAAAAAAD+////qwlJoIxa98SbghL0F+LxWrP1wz3PFTghqBOfh3pbe+QBAAAAAP7///8CYDvqCwAAAAAZdqkUdopAu9dAy+gdmI5x3ipNXHE5ax2IrI4kAAAAAAAAGXapFG9GILVT+glechue4O/p+gOcykWXiKwAAAAAAAEHakcwRAIgR1lmF5fAGwNrJZKJSGhiGDR9iYZLcZ4ff89X0eURZYcCIFMJ6r9Wqk2Ikf/REf3xM286KdqGbX+EhtdVRs7tr5MZASEDXNxh/HupccC1AaZGoqg7ECy0OIEhfKaC3Ibi1z+ogpIAAQEgAOH1BQAAAAAXqRQ1RebjO4MsRwUPJNPuuTycA5SLx4cBBBYAFIXRNTfy4mVAWjTbr6nj3aAfuCMIAAAA'
+        xonly = bytes.fromhex('339ce7e165e67d93adb3fef88a6d4beed33f01fa876f05a225242b82a631abc0')
+        leaf, origin, path = b'\x11' * 32, b'\x00' * 8, (c_uint32 * 1)()
+        psbt = self.parse_base64(b64)
+        ret = wally_psbt_input_taproot_keypath_add(psbt.contents.inputs[1],
+                                                   xonly, len(xonly), leaf, len(leaf),
+                                                   origin, 4, path, 1)
+        self.assertEqual(ret, WALLY_OK)
+        src = b64decode(self.to_base64(psbt))
+        wally_psbt_free(psbt)
+
+        def varint(n):
+            if n < 0xfd:
+                return bytes([n])
+            for prefix, size in [(0xfd, 2), (0xfe, 4), (0xff, 8)]:
+                if n < 1 << (size * 8):
+                    return bytes([prefix]) + n.to_bytes(size, 'little')
+
+        def with_hashes(count, hashes):
+            # Replace the value of the PSBT_IN_TAP_BIP32_DERIVATION field
+            key = b'\x21\x16' + xonly
+            old = key + bytes([1 + len(leaf) + len(origin), 1]) + leaf + origin
+            self.assertEqual(src.count(old), 1)
+            val = varint(count) + hashes + origin
+            return src.replace(old, key + varint(len(val)) + val)
+
+        # A hash count that overflows when multiplied by the hash length
+        for count, hashes in [(1 << 59, b''), ((1 << 59) + 1, leaf)]:
+            psbt_bytes = with_hashes(count, hashes)
+            ret = wally_psbt_from_bytes(psbt_bytes, len(psbt_bytes), 0, psbt)
+            self.assertEqual(ret, WALLY_EINVAL)
+        psbt_bytes = with_hashes(1, leaf)
+        self.assertEqual(psbt_bytes, src)
+        ret = wally_psbt_from_bytes(psbt_bytes, len(psbt_bytes), 0, psbt)
+        self.assertEqual(ret, WALLY_OK)
+        wally_psbt_free(psbt)
+
     def test_parse_malloc_fail(self):
         """Test that allocation failures when parsing return WALLY_ENOMEM"""
         _, is_elements_build = wally_is_elements_build()
