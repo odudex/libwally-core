@@ -1,5 +1,6 @@
 import json
 import unittest
+from base64 import b64decode
 from util import *
 
 FLAG_GRIND_R = 0x4
@@ -476,6 +477,14 @@ class PSBTTests(unittest.TestCase):
         SERIALIZE_FLAG_REDUNDANT = 0x1
         serialized = self.to_base64(psbt, None, SERIALIZE_FLAG_REDUNDANT)
         self.assertNotEqual(serialized, b64)
+
+    @malloc_fail([1, 2])
+    def test_parse_malloc_fail(self):
+        """Test that allocation failures when parsing return WALLY_ENOMEM"""
+        src = b64decode(JSON['valid'][0]['psbt'])
+        psbt = pointer(wally_psbt())
+        ret = wally_psbt_from_bytes(src, len(src), 0, psbt)
+        self.assertEqual(ret, WALLY_ENOMEM)
 
 if __name__ == '__main__':
     unittest.main()
