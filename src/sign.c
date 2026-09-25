@@ -597,6 +597,8 @@ int wally_ec_scalar_subtract(const unsigned char *scalar, size_t scalar_len,
 
     if (!memcmp(scalar, operand, len)) {
         /* X - X = 0 */
+        if (!seckey_verify(scalar))
+            return WALLY_ERROR; /* Outside the group order */
         return WALLY_OK; /* bytes_out zeroed above */
     }
 
