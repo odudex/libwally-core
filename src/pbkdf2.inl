@@ -24,7 +24,7 @@ int SHA_POST(wally_pbkdf2_hmac_)(const unsigned char *pass, size_t pass_len,
     BUILD_ASSERT(sizeof(beint32_t) == PBKDF2_HMAC_EXTRA_LEN);
     BUILD_ASSERT(sizeof(d1) == PBKDF2_HMAC_SHA_LEN);
 
-    if (!bytes_out || !len)
+    if ((!pass && pass_len) || (!salt && salt_len) || !bytes_out || !len)
         return WALLY_EINVAL;
 
     if (flags)
