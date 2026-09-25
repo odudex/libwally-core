@@ -55,6 +55,7 @@ struct wally_descriptor;
  *|    for miniscript-only expressions or to infer the network. Must
  *|    be one of the :ref:`address-networks`. Taproot expressions for
  *|    Elements networks must use ``eltr()`` or `WALLY_MINISCRIPT_AS_ELEMENTS`.
+ *|    Elements expressions cannot be used with Bitcoin networks.
  * :param flags: :ref:`miniscript-flags`. The maximum depth of the descriptor
  *|    can be limited by passing the depth in the upper 16 bits of the flags.
  * :param output: Destination for the resulting parsed descriptor.
@@ -133,7 +134,8 @@ WALLY_CORE_API int wally_descriptor_get_network(
  * :param network: Network the descriptor should belong to. One of the :ref:`address-networks`.
  *
  * .. note:: The network can only be set if it is currently `WALLY_NETWORK_NONE`.
- *|    A non-Elements taproot descriptor cannot be set to an Elements network.
+ *|    A non-Elements taproot descriptor cannot be set to an Elements network,
+ *|    and an Elements descriptor cannot be set to a Bitcoin network.
  */
 WALLY_CORE_API int wally_descriptor_set_network(
     struct wally_descriptor *descriptor,

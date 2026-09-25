@@ -207,6 +207,31 @@ class DescriptorTests(unittest.TestCase):
         self.assertEqual(ret, WALLY_OK)
         wally_descriptor_free(d)
 
+        # Elements descriptors cannot be used on Bitcoin networks
+        if wally_is_elements_build()[1]:
+            s = 'b2396b3ee20509cdb64fe24180a14a72dbd671728eaa49bac69d2bdecb5f5a04'
+            for descriptor, flags in [(f'ct(slip77({s}),elwpkh({k}))', 0),
+                                      (f'ct(slip77({s}),elpkh({k}))', 0),
+                                      (f'ct(slip77({s}),tr({k}))', 0),
+                                      (f'ct({k},elwpkh({k}))', 0),
+                                      (f'ct({k},wpkh({k}))', 0),
+                                      (f'elwpkh({k})', 0),
+                                      (f'eltr({k})', 0),
+                                      (f'tr({k})', AS_ELEMENTS)]:
+                for network in [NETWORK_BTC_MAIN, NETWORK_BTC_TEST, NETWORK_BTC_REG]:
+                    ret = wally_descriptor_parse(descriptor, None, network, flags, d)
+                    self.assertEqual(ret, WALLY_EINVAL)
+                ret = wally_descriptor_parse(descriptor, None, NETWORK_NONE, flags, d)
+                self.assertEqual(ret, WALLY_OK)
+                ret = wally_descriptor_set_network(d, NETWORK_BTC_MAIN)
+                self.assertEqual(ret, WALLY_EINVAL)
+                ret = wally_descriptor_set_network(d, NETWORK_LIQUID)
+                self.assertEqual(ret, WALLY_OK)
+                wally_descriptor_free(d)
+                ret = wally_descriptor_parse(descriptor, None, NETWORK_LIQUID, flags, d)
+                self.assertEqual(ret, WALLY_OK)
+                wally_descriptor_free(d)
+
     def test_descriptor_to_addresses(self):
         addrs_len = 64
         addrs = (c_char_p * addrs_len)()

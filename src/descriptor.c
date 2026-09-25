@@ -337,14 +337,18 @@ static const struct addr_ver_t *addr_ver_from_family(
     return addr_ver; /* Found */
 }
 
-/* Elements tweaks taproot keys with different tagged hashes, so a
- * Bitcoin tr() expression cannot be used on an Elements network */
-static bool is_btc_taproot_on_elements(const ms_ctx *ctx,
-                                       const struct addr_ver_t *addr_ver)
+/* Elements expressions cannot be used on a Bitcoin network. Elements also
+ * tweaks taproot keys with different tagged hashes, so a Bitcoin tr()
+ * expression cannot be used on an Elements network */
+static bool is_wrong_network(const ms_ctx *ctx,
+                             const struct addr_ver_t *addr_ver)
 {
-    return addr_ver && addr_ver->blech32[0] &&
-           (ctx->features & WALLY_MS_IS_TAPROOT) &&
-           !(ctx->features & WALLY_MS_IS_ELEMENTS);
+    const bool is_elements = ctx->features & WALLY_MS_IS_ELEMENTS;
+    if (!addr_ver)
+        return false;
+    if (!addr_ver->blech32[0])
+        return is_elements;
+    return (ctx->features & WALLY_MS_IS_TAPROOT) && !is_elements;
 }
 
 /* Function prototype */
@@ -3635,8 +3639,8 @@ int wally_descriptor_parse(const char *miniscript,
         else
             ret = analyze_miniscript(ctx, ctx->src, ctx->src_len, kind,
                                      flags, NULL, NULL, &ctx->top_node);
-        if (ret == WALLY_OK && is_btc_taproot_on_elements(ctx, ctx->addr_ver))
-            ret = WALLY_EINVAL; /* Must use eltr() or WALLY_MINISCRIPT_AS_ELEMENTS */
+        if (ret == WALLY_OK && is_wrong_network(ctx, ctx->addr_ver))
+            ret = WALLY_EINVAL; /* Bitcoin/Elements expression/network mismatch */
         if (ret == WALLY_OK)
             ret = node_generation_size(ctx->top_node, &ctx->script_len);
         if (ret == WALLY_OK && (flags & WALLY_MINISCRIPT_POLICY_TEMPLATE)) {
@@ -3900,8 +3904,8 @@ int wally_descriptor_set_network(struct wally_descriptor *descriptor,
         return WALLY_OK; /* No-op */
     if (descriptor->addr_ver)
         return WALLY_EINVAL; /* Already have a network */
-    if (!addr_ver || is_btc_taproot_on_elements(descriptor, addr_ver))
-        return WALLY_EINVAL; /* Unknown network, or tr() on Elements */
+    if (!addr_ver || is_wrong_network(descriptor, addr_ver))
+        return WALLY_EINVAL; /* Unknown or mismatched network */
     descriptor->addr_ver = addr_ver;
     return WALLY_OK;
 }
