@@ -842,13 +842,11 @@ int wally_asset_blinding_key_from_seed(
     int ret;
 
     ret = wally_symmetric_key_from_seed(bytes, bytes_len, root, sizeof(root));
-    if (ret == WALLY_OK) {
+    if (ret == WALLY_OK)
         ret = wally_symmetric_key_from_parent(root, sizeof(root), 0,
                                               SLIP77_LABEL, sizeof(SLIP77_LABEL),
                                               bytes_out, len);
-        wally_clear(root, sizeof(root));
-    }
-
+    wally_clear(root, sizeof(root));
     return ret;
 #endif /* BUILD_ELEMENTS */
 }
@@ -911,15 +909,15 @@ int wally_asset_blinding_key_to_ec_public_key(
 }
 
 #ifdef BUILD_ELEMENTS
-static void elip150_tagged_hash(const unsigned char *pubkey, size_t pubkey_len,
-                                const unsigned char *script, size_t script_len,
-                                struct sha256 *sha_out)
+static int elip150_tagged_hash(const unsigned char *pubkey, size_t pubkey_len,
+                               const unsigned char *script, size_t script_len,
+                               struct sha256 *sha_out)
 {
     struct sha256_ctx ctx;
     tagged_hash_init(&ctx, CT_BLINDING_KEY_1_0_SHA256, SHA256_LEN);
     sha256_update(&ctx, pubkey, pubkey_len);
     hash_varbuff(&ctx, script, script_len); /* Consensus encoding */
-    sha256_done(&ctx, sha_out);
+    return sha256_done(&ctx, sha_out) ? WALLY_OK : WALLY_ERROR;
 }
 #endif /* BUILD_ELEMENTS */
 
@@ -943,9 +941,10 @@ int wally_elip150_private_key_to_ec_private_key(
     if (ret == WALLY_OK) {
         struct sha256 sha;
         unsigned char tweaked[EC_PRIVATE_KEY_LEN];
-        elip150_tagged_hash(pubkey, sizeof(pubkey), script, script_len, &sha);
-        ret = wally_ec_scalar_add(bytes, bytes_len, sha.u.u8, sizeof(sha),
-                                  tweaked, sizeof(tweaked));
+        ret = elip150_tagged_hash(pubkey, sizeof(pubkey), script, script_len, &sha);
+        if (ret == WALLY_OK)
+            ret = wally_ec_scalar_add(bytes, bytes_len, sha.u.u8, sizeof(sha),
+                                      tweaked, sizeof(tweaked));
         if (ret == WALLY_OK)
             memcpy(bytes_out, tweaked, sizeof(tweaked));
         wally_clear(tweaked, sizeof(tweaked));
@@ -989,9 +988,10 @@ int wally_elip150_public_key_to_ec_public_key(
         !bytes_out || len != EC_PUBLIC_KEY_LEN)
         return WALLY_EINVAL;
 
-    elip150_tagged_hash(bytes, bytes_len, script, script_len, &sha);
-    ret = wally_ec_public_key_tweak(bytes, bytes_len, sha.u.u8, sizeof(sha),
-                                    tweaked, sizeof(tweaked));
+    ret = elip150_tagged_hash(bytes, bytes_len, script, script_len, &sha);
+    if (ret == WALLY_OK)
+        ret = wally_ec_public_key_tweak(bytes, bytes_len, sha.u.u8, sizeof(sha),
+                                        tweaked, sizeof(tweaked));
     if (ret == WALLY_OK)
         memcpy(bytes_out, tweaked, sizeof(tweaked));
     return ret;
@@ -1009,7 +1009,7 @@ static int bk_to_abf_vbf_impl(
 #ifndef BUILD_ELEMENTS
     return WALLY_ERROR;
 #else
-    unsigned char buff[SHA256_LEN];
+    unsigned char buff[SHA256_LEN], *out = bytes_out;
     unsigned char msg[7] = { 0x00, 'B', 'F', 0x00, 0x00, 0x00, 0x00 };
     size_t i;
     int ret;
@@ -1025,11 +1025,13 @@ static int bk_to_abf_vbf_impl(
             if (flags & i) {
                 msg[0] = i == BK_ABF ? 'A' : 'V';
                 ret = wally_hmac_sha256(buff, sizeof(buff), msg, sizeof(msg),
-                                        bytes_out, SHA256_LEN);
-                bytes_out += SHA256_LEN;
+                                        out, SHA256_LEN);
+                out += SHA256_LEN;
             }
         }
     }
+    if (ret != WALLY_OK)
+        wally_clear(bytes_out, len); /* Don't return a partial result */
     wally_clear(buff, sizeof(buff));
     return ret;
 #endif /* BUILD_ELEMENTS */

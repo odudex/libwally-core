@@ -1,6 +1,8 @@
 #ifndef LIBWALLY_HMAC_H
 #define LIBWALLY_HMAC_H
 
+#include <ccan/compiler/compiler.h>
+
 struct sha256;
 struct sha512;
 
@@ -12,10 +14,13 @@ struct sha512;
  * @key_len: The length of @key in bytes.
  * @msg: The message to hash
  * @msg_len: The length of @msg in bytes.
+ *
+ * Returns WALLY_OK, or WALLY_ERROR if hashing failed, in which case
+ * @sha is cleared.
  */
-void hmac_sha256_impl(struct sha256 *sha,
-                      const unsigned char *key, size_t key_len,
-                      const unsigned char *msg, size_t msg_len);
+int hmac_sha256_impl(struct sha256 *sha,
+                     const unsigned char *key, size_t key_len,
+                     const unsigned char *msg, size_t msg_len) WARN_UNUSED_RESULT;
 
 /**
  * hmac_sha512 - Compute an HMAC using SHA-512
@@ -25,9 +30,12 @@ void hmac_sha256_impl(struct sha256 *sha,
  * @key_len: The length of @key in bytes.
  * @msg: The message to hash
  * @msg_len: The length of @msg in bytes.
+ *
+ * Returns WALLY_OK, or WALLY_ERROR if hashing failed, in which case
+ * @sha is cleared.
  */
-void hmac_sha512_impl(struct sha512 *sha,
-                      const unsigned char *key, size_t key_len,
-                      const unsigned char *msg, size_t msg_len);
+int hmac_sha512_impl(struct sha512 *sha,
+                     const unsigned char *key, size_t key_len,
+                     const unsigned char *msg, size_t msg_len) WARN_UNUSED_RESULT;
 
 #endif /* LIBWALLY_HMAC_H */
