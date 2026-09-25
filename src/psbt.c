@@ -2480,7 +2480,7 @@ unknown:
         pre_key = *cursor;
     }
 
-    if (!(flags & WALLY_PSBT_PARSE_FLAG_LOOSE)) {
+    if (ret == WALLY_OK && !(flags & WALLY_PSBT_PARSE_FLAG_LOOSE)) {
         if (mandatory && (keyset & mandatory) != mandatory)
             ret = WALLY_EINVAL; /* Mandatory field is missing */
         else if (disallowed && (keyset & disallowed))
@@ -2634,7 +2634,7 @@ unknown:
     }
 #endif /* BUILD_ELEMENTS */
 
-    if (!(flags & WALLY_PSBT_PARSE_FLAG_LOOSE)) {
+    if (ret == WALLY_OK && !(flags & WALLY_PSBT_PARSE_FLAG_LOOSE)) {
         if (mandatory && (keyset & mandatory) != mandatory)
             ret = WALLY_EINVAL; /* Mandatory field is missing*/
         else if (disallowed && (keyset & disallowed))
@@ -2801,7 +2801,7 @@ unknown:
         mandatory &= PSBT_FT_MASK;
         disallowed &= PSBT_FT_MASK;
     }
-    if (!(flags & WALLY_PSBT_PARSE_FLAG_LOOSE)) {
+    if (ret == WALLY_OK && !(flags & WALLY_PSBT_PARSE_FLAG_LOOSE)) {
         if (mandatory && (keyset & mandatory) != mandatory)
             ret = WALLY_EINVAL; /* Mandatory field is missing*/
         else if (disallowed && (keyset & disallowed))
