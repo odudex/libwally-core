@@ -629,6 +629,8 @@ class DescriptorTests(unittest.TestCase):
             ret = wally_descriptor_derive_bip32_key(d, 0, 0, 0, 5, flags, byref(out))
             self.assertEqual(ret, WALLY_OK)
             self.assertEqual(out.priv_key[0], FLAG_KEY_PUBLIC)
+            # The padding must not be filled with uninitialized memory
+            self.assertEqual(bytes(out.pad1) + bytes(out.pad2), bytes(13))
             ret, key_str = bip32_key_to_base58(byref(out), FLAG_KEY_PUBLIC)
             self.assertEqual((ret, key_str), (WALLY_OK, expected))
         wally_descriptor_free(d)
