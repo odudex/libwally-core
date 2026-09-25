@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 import util
@@ -663,6 +664,53 @@ class TransactionTests(unittest.TestCase):
                 expected = get_sighash(tapleaf_hex, annex_hex, None)
                 self.assertEqual(get_sighash(tapleaf_hex, annex_hex, cache), expected)
             wally_map_free(cache)
+
+    def test_taproot_script_path_key_version(self):
+        """Test that BIP-342 script path signing uses key version 0"""
+        keyspend_case = JSON['keyPathSpending'][0]
+        utxos = keyspend_case['given']['utxosSpent']
+        tx = self.tx_deserialize_hex(keyspend_case['given']['rawUnsignedTx'])
+        # Use an input signed with SIGHASH_ALL, whose sigMsg ends with
+        # the spend_type byte followed by the 4-byte input index
+        input_spending = keyspend_case['inputSpending'][2]
+        self.assertEqual(input_spending['given']['hashType'], 1)
+        index = input_spending['given']['txinIndex']
+        sig_msg = bytearray.fromhex(input_spending['intermediary']['sigMsg'])
+
+        scripts, values = pointer(wally_map()), pointer(wally_map())
+        for m in [scripts, values]:
+            self.assertEqual(wally_map_init_alloc(len(utxos), None, m), WALLY_OK)
+        for i, utxo in enumerate(utxos):
+            script, script_len = make_cbuffer(utxo['scriptPubKey'])
+            wally_map_add_integer(scripts, i, script, script_len)
+            value = int(utxo['amountSats']).to_bytes(8, 'little')
+            wally_map_add_integer(values, i, value, len(value))
+
+        def tagged_hash(tag, data):
+            tag_hash = hashlib.sha256(tag).digest()
+            return hashlib.sha256(tag_hash + tag_hash + data).digest()
+
+        # <32 byte x-only pubkey> OP_CHECKSIG
+        tapleaf_hex = '20' + keyspend_case['inputSpending'][0]['intermediary']['internalPubkey'] + 'ac'
+        tapleaf = bytes.fromhex(tapleaf_hex)
+        leaf_hash = tagged_hash(b'TapLeaf', bytes([0xc0, len(tapleaf)]) + tapleaf)
+        # BIP-342: ext_flag 1 (spend_type 2), key_version 0, no code separator
+        sig_msg[-5] = 2
+        sig_msg += leaf_hash + bytes([0]) + bytes.fromhex('ffffffff')
+        expected = tagged_hash(b'TapSighash', bytes(sig_msg)).hex()
+
+        script, script_len = make_cbuffer(tapleaf_hex)
+        for key_version in [0, 1]:
+            bytes_out, out_len = make_cbuffer('00'*32)
+            ret = wally_tx_get_input_signature_hash(tx, index, scripts, None, values,
+                                                    script, script_len, key_version,
+                                                    0xffffffff, None, 0, None, 0,
+                                                    1, SIGTYPE_SW_V1, None,
+                                                    bytes_out, out_len)
+            self.assertEqual(ret, WALLY_OK)
+            self.assertEqual(h(bytes_out[:out_len]) == utf8(expected), key_version == 0)
+        wally_map_free(scripts)
+        wally_map_free(values)
 
     def test_get_elements_taproot_signature_hash(self):
         """Tests for computing the Elements taproot signature hash"""
