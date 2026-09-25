@@ -513,14 +513,14 @@ int wally_tx_elements_input_issuance_set(
     size_t inflation_keys_rangeproof_len)
 {
 #ifdef BUILD_ELEMENTS
-    unsigned char *input_issuance_amount = input->issuance_amount;
-    size_t input_issuance_amount_len = input->issuance_amount_len;
-    unsigned char *input_inflation_keys = input->inflation_keys;
-    size_t input_inflation_keys_len = input->inflation_keys_len;
-    unsigned char *input_issuance_amount_rangeproof = input->issuance_amount_rangeproof;
-    size_t input_issuance_amount_rangeproof_len = input->issuance_amount_rangeproof_len;
-    unsigned char *input_inflation_keys_rangeproof = input->inflation_keys_rangeproof;
-    size_t input_inflation_keys_rangeproof_len = input->inflation_keys_rangeproof_len;
+    unsigned char *input_issuance_amount = input ? input->issuance_amount : NULL;
+    size_t input_issuance_amount_len = input ? input->issuance_amount_len : 0;
+    unsigned char *input_inflation_keys = input ? input->inflation_keys : NULL;
+    size_t input_inflation_keys_len = input ? input->inflation_keys_len : 0;
+    unsigned char *input_issuance_amount_rangeproof = input ? input->issuance_amount_rangeproof : NULL;
+    size_t input_issuance_amount_rangeproof_len = input ? input->issuance_amount_rangeproof_len : 0;
+    unsigned char *input_inflation_keys_rangeproof = input ? input->inflation_keys_rangeproof : NULL;
+    size_t input_inflation_keys_rangeproof_len = input ? input->inflation_keys_rangeproof_len : 0;
 #endif /* BUILD_ELEMENTS */
     int ret = tx_elements_input_issuance_init(input,
                                               nonce,
@@ -932,16 +932,16 @@ int wally_tx_elements_output_commitment_set(
     size_t rangeproof_len)
 {
 #ifdef BUILD_ELEMENTS
-    unsigned char *output_asset = output->asset;
-    size_t output_asset_len = output->asset_len;
-    unsigned char *output_value = output->value;
-    size_t output_value_len = output->value_len;
-    unsigned char *output_nonce = output->nonce;
-    size_t output_nonce_len = output->nonce_len;
-    unsigned char *output_surjectionproof = output->surjectionproof;
-    size_t output_surjectionproof_len = output->surjectionproof_len;
-    unsigned char *output_rangeproof = output->rangeproof;
-    size_t output_rangeproof_len = output->rangeproof_len;
+    unsigned char *output_asset = output ? output->asset : NULL;
+    size_t output_asset_len = output ? output->asset_len : 0;
+    unsigned char *output_value = output ? output->value : NULL;
+    size_t output_value_len = output ? output->value_len : 0;
+    unsigned char *output_nonce = output ? output->nonce : NULL;
+    size_t output_nonce_len = output ? output->nonce_len : 0;
+    unsigned char *output_surjectionproof = output ? output->surjectionproof : NULL;
+    size_t output_surjectionproof_len = output ? output->surjectionproof_len : 0;
+    unsigned char *output_rangeproof = output ? output->rangeproof : NULL;
+    size_t output_rangeproof_len = output ? output->rangeproof_len : 0;
 #endif /* BUILD_ELEMENTS */
     int ret = tx_elements_output_commitment_init(output, asset, asset_len,
                                                  value, value_len,
