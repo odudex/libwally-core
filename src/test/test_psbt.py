@@ -601,6 +601,31 @@ class PSBTTests(unittest.TestCase):
         self.assertEqual(ret, WALLY_OK)
         wally_psbt_free(psbt)
 
+        # BIP-371 does not limit the number of leaf hashes to the
+        # BIP-341 maximum merkle path length of 128
+        for count in [128, 129, 1000]:
+            psbt_bytes = with_hashes(count, leaf * count)
+            ret = wally_psbt_from_bytes(psbt_bytes, len(psbt_bytes), 0, psbt)
+            self.assertEqual(ret, WALLY_OK)
+            ret, length = wally_psbt_get_length(psbt, 0)
+            self.assertEqual((ret, length), (WALLY_OK, len(psbt_bytes)))
+            buf, buf_len = make_cbuffer('00' * length)
+            ret, written = wally_psbt_to_bytes(psbt, 0, buf, buf_len)
+            self.assertEqual((ret, bytes(buf)), (WALLY_OK, psbt_bytes))
+            wally_psbt_free(psbt)
+        # Leaf hashes are limited to Bitcoin Core's maximum field size
+        max_hashes = 0x02000000 // 32
+        for count, expected in [(129, WALLY_OK), (max_hashes, WALLY_OK),
+                                (max_hashes + 1, WALLY_EINVAL)]:
+            hashes = leaf * count
+            psbt = self.parse_base64(b64)
+            for fn, parent in [(wally_psbt_input_taproot_keypath_add, psbt.contents.inputs[1]),
+                               (wally_psbt_output_taproot_keypath_add, psbt.contents.outputs[1])]:
+                ret = fn(parent, xonly, len(xonly), hashes, len(hashes),
+                         origin, 4, path, 1)
+                self.assertEqual(ret, expected)
+            wally_psbt_free(psbt)
+
     def test_parse_malloc_fail(self):
         """Test that allocation failures when parsing return WALLY_ENOMEM"""
         _, is_elements_build = wally_is_elements_build()
