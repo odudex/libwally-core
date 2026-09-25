@@ -1,5 +1,6 @@
 import json
 import unittest
+import util
 from util import *
 
 MAX_SATOSHI = 21000000 * 100000000
@@ -960,6 +961,53 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual((txout.asset_len, txout.value_len), (asset_len, value_len))
         self.assertEqual(WALLY_OK, wally_tx_elements_input_issuance_free(txin))
         self.assertEqual(WALLY_OK, wally_tx_elements_output_commitment_free(txout))
+
+    def test_elements_input_clone_malloc_fail(self):
+        """Test that allocation failures when cloning inputs return WALLY_ENOMEM"""
+        if not wally_is_elements_build()[1]:
+            self.skipTest('Elements support not enabled')
+
+        txhash, txhash_len = make_cbuffer('00' * 32)
+        script, script_len = make_cbuffer('51')
+        item, item_len = make_cbuffer('aa' * 4)
+        witnesses = []
+        for num_items in [1, 2]:
+            wit_p = pointer(wally_tx_witness_stack())
+            self.assertEqual(wally_tx_witness_stack_init_alloc(num_items, wit_p), WALLY_OK)
+            for _ in range(num_items):
+                ret = wally_tx_witness_stack_add(wit_p[0], item, item_len)
+                self.assertEqual(ret, WALLY_OK)
+            witnesses.append(wit_p)
+        witness, pegin_witness = witnesses[0][0], witnesses[1][0]
+        src = pointer(wally_tx_input())
+        ret = wally_tx_elements_input_init_alloc(txhash, txhash_len, 0, 0xffffffff,
+                                                 script, script_len, witness,
+                                                 None, 0, None, 0, None, 0, None, 0,
+                                                 None, 0, None, 0, pegin_witness, src)
+        self.assertEqual(ret, WALLY_OK)
+
+        fail_at = 0
+        while True:
+            # Fail each allocation made while cloning in turn
+            fail_at += 1
+            clone = pointer(wally_tx_input())
+            util._fail_malloc_at, util._fail_malloc_counter = fail_at, 0
+            try:
+                ret = wally_tx_input_clone_alloc(src, clone)
+                did_fail = util._fail_malloc_counter >= fail_at
+            finally:
+                util._fail_malloc_at, util._fail_malloc_counter = 0, 0
+            if not did_fail:
+                self.assertEqual(ret, WALLY_OK) # Cloned without failing
+                self.assertEqual(clone[0].witness[0].num_items, 1)
+                self.assertEqual(clone[0].pegin_witness[0].num_items, 2)
+                self.assertEqual(wally_tx_input_free(clone), WALLY_OK)
+                break
+            self.assertEqual(ret, WALLY_ENOMEM)
+
+        self.assertEqual(wally_tx_input_free(src), WALLY_OK)
+        for wit_p in witnesses:
+            self.assertEqual(wally_tx_witness_stack_free(wit_p[0]), WALLY_OK)
 
 if __name__ == '__main__':
     unittest.main()
