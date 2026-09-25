@@ -847,6 +847,71 @@ class TransactionTests(unittest.TestCase):
                 expected = get_sighash(sighash, None)
                 self.assertEqual(get_sighash(sighash, cache), expected)
             wally_map_free(cache)
+    def test_get_elements_legacy_signature_hash(self):
+        """Tests for computing pre-segwit Elements signature hashes"""
+        if not wally_is_elements_build()[1]:
+            self.skipTest('Elements support not enabled')
+
+        asset = '01' + '25b251070e29ca19043cf33ccd7324e2ddab03ecc4ae0b5e77c4fc0e5cf6c95a'
+        tx_hex = ''.join([
+            '02000000', '01', '02',
+            # Input 0
+            '11' * 32, '00000000', '00', 'fdffffff',
+            # Input 1, an issuance
+            '44' + '11' * 31, '01000080', '00', 'feffffff',
+            '00' * 32, '22' * 32, '010000000001406f40', '0100000000000003e8',
+            '03',
+            # Output 0: blinded
+            '0a' + '55' * 32, '08' + '66' * 32, '02' + '77' * 32, '160014' + '33' * 20,
+            # Output 1: explicit
+            asset, '010000000000001388', '00', '066a0401020304',
+            # Output 2: fee
+            asset, '0100000000000000fa', '00', '00',
+            '00000000',
+            # Input witnesses
+            '00000000', '00000000',
+            # Output witnesses: surjection proof, rangeproof
+            '050100010203', '0860230000aabbccdd',
+            '00', '01ee',
+            '00', '00',
+        ])
+        tx = self.tx_deserialize_hex(tx_hex, True)
+        script, script_len = make_cbuffer('76a914' + '33' * 20 + '88ac')
+        values = pointer(wally_map()) # Unused for pre-segwit signing
+        self.assertEqual(wally_map_init_alloc(1, None, values), WALLY_OK)
+        out, out_len = make_cbuffer('00' * 32)
+
+        # Computed following Elements' CTransactionSignatureSerializer,
+        # matching the results from release_1.3.1
+        for index, sighash, expected in [
+            (0, 0x01, 'a4a6cba4653dcef253e4770dd1bb9590b411d28bf66468334b5c9881c0cc8bef'),
+            (0, 0x41, 'e053bfc2f83196574dafec1f68737fc29daab3a83455943ddeb45a153727c9b9'),
+            (0, 0x42, '7cee69e46d40ff4cbaa50dd62cfeea6a29be5a3e080c2b7878ddb4ece9428c73'),
+            (0, 0x43, '37623d55121cd04861f8894c67f92c7f9df78198e43c997db46b7e0f324f4df6'),
+            (0, 0xc1, '04e671e3f4b573d36b368653f9af348286988b3c48ba2953c5b49e37519bfd49'),
+            (0, 0xc2, 'ddbf2edd2096db5b53e9e0e9968cb9bbae79ab79e5e3ab4733a5d198aa4afd38'),
+            (0, 0xc3, '46014e4e1e5f502eaabaae2f970eeb51fc99a0a34e73e4a682f1a520cb96ff74'),
+            (1, 0x41, 'd6fbed522c70fd474401e232c4b8adffe99996adeeae1ae576f61da005cbd875'),
+            (1, 0x42, '442d3e2ba33f5a9aba423026996ae7eb958b4f11984fbaf4d3a313f3570b3610'),
+            (1, 0xc1, 'cf1291ba1b27689770d525d95d2a9754a32e9b9b2060a8aa044e97eab17ddc70'),
+            (1, 0xc2, '695985760a92832d5b4e5578f412eb80002ee5f0625ec0c7375f70108eee8ce1'),
+        ]:
+            ret = wally_tx_get_elements_signature_hash(tx, index, script, script_len,
+                                                       None, 0, sighash, 0,
+                                                       out, out_len)
+            self.assertEqual((ret, h(out[:out_len])), (WALLY_OK, utf8(expected)))
+
+            args = [tx, index, None, None, values, script, script_len,
+                    0, 0xffffffff, None, 0, None, 0,
+                    sighash, SIGTYPE_PRE_SW, None, out, out_len]
+            ret = wally_tx_get_input_signature_hash(*args)
+            self.assertEqual((ret, h(out[:out_len])), (WALLY_OK, utf8(expected)))
+
+        # SIGHASH_FORKID (== SIGHASH_RANGEPROOF) is invalid for BTC
+        tx = self.tx_deserialize_hex(TX_FAKE_HEX)
+        ret = wally_tx_get_btc_signature_hash(tx, 0, script, script_len, 1,
+                                              0x41, 0, out, out_len)
+        self.assertEqual(ret, WALLY_EINVAL)
 
     def test_elip203(self):
         """Tests for deserializing ELIP203 test vectors"""
