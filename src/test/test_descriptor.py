@@ -596,6 +596,28 @@ class DescriptorTests(unittest.TestCase):
                     self.assertEqual((ret, path_str), (WALLY_OK, expected_path))
                     wally_descriptor_free(d)
 
+    def test_derive_bip32_key_failure(self):
+        """Test that a failed key derivation doesn't return the parent key"""
+        # An xprv at the maximum depth cannot derive any children
+        priv, priv_len = make_cbuffer('11' * 32)
+        cc, cc_len = make_cbuffer('22' * 32)
+        parent160, parent160_len = make_cbuffer('33' * 20)
+        k = ext_key()
+        ret = bip32_key_init(0x0488ADE4, 255, 1, cc, cc_len, None, 0, # VER_MAIN_PRIVATE
+                             priv, priv_len, None, 0, parent160, parent160_len, byref(k))
+        self.assertEqual(ret, WALLY_OK)
+        ret, xprv = bip32_key_to_base58(byref(k), FLAG_KEY_PRIVATE)
+        self.assertEqual(ret, WALLY_OK)
+        d = c_void_p()
+        ret = wally_descriptor_parse(f'pkh({xprv}/0)', None, NETWORK_NONE, 0, d)
+        self.assertEqual(ret, WALLY_OK)
+        for flags in [FLAG_KEY_PRIVATE, FLAG_KEY_PUBLIC]:
+            out = ext_key()
+            ret = wally_descriptor_derive_bip32_key(d, 0, 0, 0, 0, flags, byref(out))
+            self.assertEqual(ret, WALLY_EINVAL)
+            self.assertEqual(bytes(out), bytes(sizeof(out)))
+        wally_descriptor_free(d)
+
     def test_wrappers(self):
         """Test miniscript wrapper expressions (a:, s:, c:, d:, v:, j:, n:, l:, u:, t:)"""
         script, script_len = make_cbuffer('00' * 256 * 2)
