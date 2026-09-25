@@ -708,6 +708,20 @@ class DescriptorTests(unittest.TestCase):
             self.assertEqual(script[:written], make_cbuffer(expected)[0], f'wrong script for: {miniscript}')
             wally_descriptor_free(d)
 
+    @malloc_fail(range(1, 32))
+    def test_parse_malloc_fail(self):
+        """Test that allocation failures while parsing return WALLY_ENOMEM"""
+        # Every allocation made below is failed in turn
+        for descriptor in [
+            'pk(02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9)',
+            'tr(b71aa79cab0ae2d83b82d44cbdc23f5dcca3797e8ba622c4e45a8f7dce28ba0e)',
+        ]:
+            d = c_void_p()
+            ret = wally_descriptor_parse(descriptor, None, NETWORK_NONE, 0, d)
+            self.assertIn(ret, [WALLY_OK, WALLY_ENOMEM])
+            if ret == WALLY_OK:
+                wally_descriptor_free(d)
+
     def test_taproot_bad_args(self):
         buf, buf_len = make_cbuffer('00' * 1024)
         d = c_void_p()
