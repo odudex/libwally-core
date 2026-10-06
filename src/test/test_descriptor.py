@@ -240,6 +240,22 @@ class DescriptorTests(unittest.TestCase):
                 self.assertEqual(ret, WALLY_OK)
                 wally_descriptor_free(d)
 
+            # Only the outermost expression can have the el prefix
+            for descriptor, expected in [
+                (f'elsh(wpkh({k}))',          WALLY_OK),
+                (f'ct({k},elsh(wpkh({k})))',  WALLY_OK),
+                (f'elsh(elwpkh({k}))',        WALLY_EINVAL),
+                (f'wsh(elpk({k}))',           WALLY_EINVAL),
+                (f'elwsh(elpk({k}))',         WALLY_EINVAL),
+                (f'wsh(elmulti(1,{k}))',      WALLY_EINVAL),
+                (f'eltr({k},elpk({k}))',      WALLY_EINVAL),
+                (f'ct({k},elsh(elwpkh({k})))', WALLY_EINVAL),
+            ]:
+                for network in [NETWORK_NONE, NETWORK_LIQUID]:
+                    ret = wally_descriptor_parse(descriptor, None, network, 0, d)
+                    self.assertEqual(ret, expected)
+                    wally_descriptor_free(d)
+
     def test_descriptor_to_addresses(self):
         addrs_len = 64
         addrs = (c_char_p * addrs_len)()
