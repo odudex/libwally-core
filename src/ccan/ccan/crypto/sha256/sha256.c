@@ -374,7 +374,7 @@ bool sha256(struct sha256 *sha, const void *p, size_t size)
 	size_t len = 0;
 
 	if (!size)
-		return true;  /* No-op */
+		p = ""; /* Hash the empty message, as a non-NULL input */
 	if (psa_hash_compute(PSA_ALG_SHA_256, p, size, sha->u.u8, sizeof(sha->u.u8),
 	                     &len) != PSA_SUCCESS ||
 	    len != sizeof(sha->u.u8)) {

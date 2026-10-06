@@ -332,7 +332,7 @@ bool sha512(struct sha512 *sha, const void *p, size_t size)
 {
 	size_t len = 0;
 	if (!size)
-		return true; /* No-op */
+		p = ""; /* Hash the empty message, as a non-NULL input */
 
 	if (psa_hash_compute(PSA_ALG_SHA_512, p, size, sha->u.u8, sizeof(sha->u.u8),
 	                     &len) != PSA_SUCCESS ||
