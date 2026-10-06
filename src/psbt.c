@@ -301,6 +301,14 @@ static int map_field_get(const struct wally_map *map_in, uint32_t type,
     return ret;
 }
 
+/* Remove all items from a map, keeping its verify function */
+static void map_clear_items(struct wally_map *map_in)
+{
+    const wally_map_verify_fn_t verify_fn = map_in->verify_fn;
+    wally_map_clear(map_in);
+    map_in->verify_fn = verify_fn;
+}
+
 static int map_field_set(struct wally_map *map_in, uint32_t type,
                          const unsigned char *val, size_t val_len)
 {
@@ -5161,9 +5169,9 @@ done:
         wally_map_remove_integer(&input->psbt_fields, PSBT_IN_WITNESS_SCRIPT);
         wally_map_remove_integer(&input->psbt_fields, PSBT_IN_TAP_KEY_SIG);
         wally_map_remove_integer(&input->psbt_fields, PSBT_IN_TAP_INTERNAL_KEY);
-        wally_map_clear(&input->keypaths);
-        wally_map_clear(&input->signatures);
-        wally_map_clear(&input->taproot_leaf_paths);
+        map_clear_items(&input->keypaths);
+        map_clear_items(&input->signatures);
+        map_clear_items(&input->taproot_leaf_paths);
         input->sighash = 0;
     }
     return WALLY_OK;
