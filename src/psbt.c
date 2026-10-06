@@ -5169,9 +5169,14 @@ done:
         wally_map_remove_integer(&input->psbt_fields, PSBT_IN_WITNESS_SCRIPT);
         wally_map_remove_integer(&input->psbt_fields, PSBT_IN_TAP_KEY_SIG);
         wally_map_remove_integer(&input->psbt_fields, PSBT_IN_TAP_INTERNAL_KEY);
+        wally_map_remove_integer(&input->psbt_fields, PSBT_IN_TAP_MERKLE_ROOT);
         map_clear_items(&input->keypaths);
         map_clear_items(&input->signatures);
         map_clear_items(&input->taproot_leaf_paths);
+        /* Clear script-path signing state */
+        map_clear_items(&input->taproot_leaf_signatures);
+        map_clear_items(&input->taproot_leaf_scripts);
+        map_clear_items(&input->taproot_leaf_hashes);
         input->sighash = 0;
     }
     return WALLY_OK;
