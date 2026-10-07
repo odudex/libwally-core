@@ -223,7 +223,15 @@ typedef struct wally_descriptor {
     uint32_t *path_buff; /* Path buffer for deriving keys */
     uint32_t max_path_elems; /* Max path length seen in the descriptor */
     struct wally_map keys;
+    bool is_tapscript; /* Parsed as a tapscript miniscript expression */
 } ms_ctx;
+
+/* Whether tapscript rules apply: either we are a tr() descriptor with a
+ * taptree, or a tapscript miniscript expression */
+static bool ctx_is_tapscript(const ms_ctx *ctx)
+{
+    return ctx->is_tapscript || (ctx->features & WALLY_MS_IS_TAPSCRIPT);
+}
 
 static int ctx_add_key_node(ms_ctx *ctx, ms_node *node)
 {
@@ -887,7 +895,7 @@ static int verify_multi_impl(ms_ctx *ctx, ms_node *node, uint32_t flags, int32_t
         top->kind != KIND_NUMBER || top->number <= 0)
         return WALLY_EINVAL;
 
-    if ((ctx->features & WALLY_MS_IS_TAPSCRIPT) != (flags & WALLY_MS_IS_TAPSCRIPT))
+    if (ctx_is_tapscript(ctx) != !!(flags & WALLY_MS_IS_TAPSCRIPT))
         return WALLY_EINVAL; /* _a/non-_a tapscript/non-tapscript mismatch */
 
     while (key) {
@@ -1338,7 +1346,7 @@ static int node_verify_wrappers(ms_ctx *ctx, ms_node *node)
                 *properties &= ~PROP_F;
                 *properties |= PROP_E;
             }
-            if (ctx->features & WALLY_MS_IS_TAPSCRIPT) {
+            if (ctx_is_tapscript(ctx)) {
                 /* d: gains the u property under tapscript thanks to
                  * tapscript requiring MINIMALIF enforcement */
                 *properties |= PROP_U;
@@ -1475,8 +1483,7 @@ static int generate_pk_h(ms_ctx *ctx, ms_node *node,
     if (script_len >= WALLY_SCRIPTPUBKEY_P2PKH_LEN - 1) {
         ret = generate_pk_k(ctx, node, buff+3, sizeof(buff)-3, written);
         if (ret == WALLY_OK) {
-            if ((node->child->flags & WALLY_MS_IS_X_ONLY) &&
-                !(ctx->features & WALLY_MS_IS_TAPSCRIPT))
+            if ((node->child->flags & WALLY_MS_IS_X_ONLY) && !ctx_is_tapscript(ctx))
                 return WALLY_EINVAL;
             script[0] = OP_DUP;
             script[1] = OP_HASH160;
@@ -1633,7 +1640,7 @@ static int generate_multi(ms_ctx *ctx, ms_node *node,
     ms_node *child = node->child;
     struct multisig_sort_data_t *sorted;
     int (*pk_verify_fn)(const unsigned char *, size_t);
-    const bool is_tapscript = (ctx->features & WALLY_MS_IS_TAPSCRIPT) != 0;
+    const bool is_tapscript = ctx_is_tapscript(ctx);
     int ret = WALLY_OK;
 
     if (!child || !node_is_root(node) || !node->builtin)
@@ -2374,7 +2381,7 @@ static int generate_inplace_wrappers(ms_ctx *ctx, ms_node *node,
         default:
             return WALLY_ERROR; /* Wrapper type not found, should not happen */
         }
-        if (!(ctx->features & WALLY_MS_IS_TAPSCRIPT) &&
+        if (!ctx_is_tapscript(ctx) &&
             *written + output_len > WITNESS_SCRIPT_MAX_SIZE)
             return WALLY_EINVAL;
         *written += output_len;
@@ -3644,6 +3651,8 @@ int wally_descriptor_parse(const char *miniscript,
     if (ret == WALLY_OK) {
         ctx->src_len = strlen(ctx->src);
         ctx->features = WALLY_MS_IS_DESCRIPTOR; /* Un-set if miniscript found */
+        if ((flags & WALLY_MINISCRIPT_ONLY) && (flags & WALLY_MINISCRIPT_TAPSCRIPT))
+            ctx->is_tapscript = true; /* Apply tapscript rules */
         if (flags & WALLY_MINISCRIPT_AS_ELEMENTS) {
             ctx->features |= WALLY_MS_IS_ELEMENTS; /* Treat as an elements descriptor */
         }

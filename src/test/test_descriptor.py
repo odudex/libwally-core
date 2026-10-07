@@ -775,6 +775,43 @@ class DescriptorTests(unittest.TestCase):
             self.assertEqual(script[:written], make_cbuffer(expected)[0], f'wrong script for: {miniscript}')
             wally_descriptor_free(d)
 
+    def test_tapscript_miniscript(self):
+        """Test that tapscript rules apply to tapscript miniscript expressions"""
+        script, script_len = make_cbuffer('00' * 128)
+        x_local = '8bc7431d9285a064b0328b6333f3a20b86664437b6de8f4e26e6bbdee258f048'
+        x_remote = 'a22745365f673e658f0d25eb0afa9aaece858c6a48dfe37a67210c2e23da8ce7'
+        x_only, _ = make_cbuffer('b71aa79cab0ae2d83b82d44cbdc23f5dcca3797e8ba622c4e45a8f7dce28ba0e')
+        h, h_len = make_cbuffer('00' * 20)
+        self.assertEqual(wally_hash160(x_only, 32, h, h_len), WALLY_OK)
+
+        # Valid only in tapscript
+        for miniscript, expected in [
+            # <K> CHECKSIG <K> CHECKSIGADD 1 NUMEQUAL
+            ('multi_a(1,key_local,key_remote)', f'20{x_local}ac20{x_remote}ba519c'),
+            # DUP HASH160 <H> EQUALVERIFY CHECKSIG
+            ('pkh(x_only)', f'76a914{bytes(h).hex()}88ac'),
+            # d: is u in tapscript: DUP IF 1 CSV VERIFY ENDIF 1 EQUAL
+            ('thresh(1,dv:older(1))', '766351b269685187'),
+        ]:
+            for flags, expected_ret in [(MS_ONLY | MS_TAP, WALLY_OK), (MS_ONLY, WALLY_EINVAL)]:
+                d = c_void_p()
+                ret = wally_descriptor_parse(miniscript, self.keys, NETWORK_NONE, flags, d)
+                self.assertEqual(ret, expected_ret)
+                if ret == WALLY_OK:
+                    ret, written = wally_descriptor_to_script(d, 0, 0, 0, 0, 0, 0,
+                                                              script, script_len)
+                    self.assertEqual(ret, WALLY_OK)
+                    self.assertEqual(script[:written], make_cbuffer(expected)[0])
+                    wally_descriptor_free(d)
+
+        # multi() is not valid in tapscript
+        for flags, expected_ret in [(MS_ONLY | MS_TAP, WALLY_EINVAL), (MS_ONLY, WALLY_OK)]:
+            d = c_void_p()
+            ret = wally_descriptor_parse('multi(1,key_local,key_remote)', self.keys,
+                                         NETWORK_NONE, flags, d)
+            self.assertEqual(ret, expected_ret)
+            wally_descriptor_free(d)
+
     def test_parse_malloc_fail(self):
         """Test that allocation failures while parsing return WALLY_ENOMEM"""
         for descriptor, max_mallocs in [
