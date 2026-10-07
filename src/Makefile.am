@@ -336,6 +336,7 @@ check-libwallycore: $(PYTHON_TEST_DEPS)
 	$(AM_V_at)$(PYTHON_TEST) test/test_base64.py
 	$(AM_V_at)$(PYTHON_TEST) test/test_bech32.py
 	$(AM_V_at)$(PYTHON_TEST) test/test_bip32.py
+	$(AM_V_at)$(PYTHON_TEST) test/test_bip379_vectors.py
 	$(AM_V_at)$(PYTHON_TEST) test/test_bip38.py
 	$(AM_V_at)$(PYTHON_TEST) test/test_bip39.py
 	$(AM_V_at)$(PYTHON_TEST) test/test_bip85.py
