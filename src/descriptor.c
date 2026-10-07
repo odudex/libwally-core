@@ -1511,7 +1511,7 @@ static int generate_sh_wsh(ms_ctx *ctx, ms_node *node,
 
     ret = generate_script(ctx, node->child, script, script_len, &output_len);
     if (ret == WALLY_OK) {
-        if (output_len > REDEEM_SCRIPT_MAX_SIZE)
+        if (output_len > (is_sh ? REDEEM_SCRIPT_MAX_SIZE : WITNESS_SCRIPT_MAX_SIZE))
             ret = WALLY_EINVAL;
         else {
            const size_t required = output_len > final_len ? output_len : final_len;
@@ -1647,8 +1647,7 @@ static int generate_multi(ms_ctx *ctx, ms_node *node,
         return WALLY_EINVAL;
 
     count = node_get_child_count(node) - 1;
-    /* FIXME: We should allow 20 keys in witness scripts */
-    if (count > (is_tapscript ? MULTI_A_NUM_KEYS_MAX : CHECKMULTISIG_NUM_KEYS_MAX))
+    if (count > (is_tapscript ? MULTI_A_NUM_KEYS_MAX : MINISCRIPT_MULTI_MAX))
         return WALLY_EINVAL; /* Too many keys for multisig */
 
     /* standard: generate threshold */
@@ -1712,9 +1711,7 @@ static int generate_multi(ms_ctx *ctx, ms_node *node,
                                   remaining_len, &number_len);
             if (ret == WALLY_OK) {
                 *written = offset + number_len + 1;
-                if (!is_tapscript && *written > REDEEM_SCRIPT_MAX_SIZE)
-                    ret = WALLY_EINVAL;
-                else if (*written <= script_len)
+                if (*written <= script_len)
                     script[*written - 1] = is_tapscript ? OP_NUMEQUAL : OP_CHECKMULTISIG;
             }
         }
@@ -2135,8 +2132,6 @@ static int generate_concat(ms_ctx *ctx, ms_node *node, size_t target_num,
     if (insert_len[3] && offset + insert_len[3] <= script_len)
         memcpy(script + offset, insert[3], insert_len[3]);
     *written = offset + insert_len[3];
-    if (*written > REDEEM_SCRIPT_MAX_SIZE)
-        return WALLY_EINVAL;
     return ret;
 }
 
@@ -2272,8 +2267,6 @@ static int generate_thresh(ms_ctx *ctx, ms_node *node,
     }
     if (ret == WALLY_OK) {
         *written = offset + output_len + 1;
-        if (*written > REDEEM_SCRIPT_MAX_SIZE)
-            return WALLY_EINVAL;
         if (*written <= script_len)
             script[*written - 1] = OP_EQUAL;
     }

@@ -812,6 +812,44 @@ class DescriptorTests(unittest.TestCase):
             self.assertEqual(ret, expected_ret)
             wally_descriptor_free(d)
 
+    def test_witness_script_size(self):
+        """Test witness scripts larger than the maximum P2SH script size"""
+        keys = []
+        for i in range(1, 21):
+            pub, pub_len = make_cbuffer('00' * 33)
+            ret = wally_ec_public_key_from_private_key(i.to_bytes(32, 'big'), 32, pub, pub_len)
+            self.assertEqual(ret, WALLY_OK)
+            keys.append(bytes(pub).hex())
+        multi = 'multi(1,{})'.format(','.join(keys))
+        # and_v(v:pk(K1),and_v(v:pk(K2),...pk(K20)))
+        and_v, and_v_tap = 'pk({})'.format(keys[-1]), 'pk({})'.format(keys[-1][2:])
+        for k in reversed(keys[:-1]):
+            and_v = 'and_v(v:pk({}),{})'.format(k, and_v)
+            and_v_tap = 'and_v(v:pk({}),{})'.format(k[2:], and_v_tap)
+        script, script_len = make_cbuffer('00' * 1024)
+
+        for descriptor, flags, expected_len in [
+            (multi, MS_ONLY, 4 + 20 * 34),
+            (f'wsh({multi})', 0, 34),
+            (and_v, MS_ONLY, 20 * 35),
+            (f'wsh({and_v})', 0, 34),
+            (and_v_tap, MS_ONLY | MS_TAP, 20 * 34),
+            (f'tr({keys[0][2:]},{and_v_tap})', 0, 34),
+            # P2SH scripts are limited to 520 bytes
+            (f'sh({multi})', 0, None),
+            (f'sh({and_v})', 0, None),
+        ]:
+            d = c_void_p()
+            ret = wally_descriptor_parse(descriptor, None, NETWORK_NONE, flags, d)
+            self.assertEqual(ret, WALLY_OK)
+            ret, written = wally_descriptor_to_script(d, 0, 0, 0, 0, 0, 0,
+                                                      script, script_len)
+            if expected_len is None:
+                self.assertEqual(ret, WALLY_EINVAL)
+            else:
+                self.assertEqual((ret, written), (WALLY_OK, expected_len))
+            wally_descriptor_free(d)
+
     def test_parse_malloc_fail(self):
         """Test that allocation failures while parsing return WALLY_ENOMEM"""
         for descriptor, max_mallocs in [
