@@ -1272,9 +1272,12 @@ static int verify_ct(ms_ctx *ctx, ms_node *node)
     case KIND_DESCRIPTOR_WSH:
     case KIND_DESCRIPTOR_COMBO:
     case KIND_DESCRIPTOR_TR:
+        return WALLY_OK;
     case KIND_MINISCRIPT_PK_K:
     case KIND_MINISCRIPT_PK_H:
-        return WALLY_OK;
+        if (node->child->next->type_properties & TYPE_B)
+            return WALLY_OK; /* Base expression: OK */
+        break;
     }
     return WALLY_EINVAL;
 }
@@ -3635,6 +3638,22 @@ static int ensure_sane(const ms_node *node)
     return WALLY_OK;
 }
 
+static int ensure_base_root(const ms_node *node)
+{
+    /* Ensure the root node is a base expression. For now this just
+     * checks top level pk_k/pk_h expressions; all other expressions
+     * are checked during parsing. */
+    if (node->builtin) {
+        const struct ms_builtin_t *builtin = builtin_get(node);
+        if (builtin->kind == KIND_MINISCRIPT_PK_K ||
+            builtin->kind == KIND_MINISCRIPT_PK_H) {
+            if (!(node->type_properties & TYPE_B))
+                return WALLY_EINVAL; /* Not a base expression */
+        }
+    }
+    return WALLY_OK;
+}
+
 int wally_descriptor_parse(const char *miniscript,
                            const struct wally_map *vars_in,
                            uint32_t network, uint32_t flags,
@@ -3705,12 +3724,12 @@ int wally_descriptor_parse(const char *miniscript,
                     !have_blinding_key)
                 ret = WALLY_EINVAL; /* this ct policy requires a blinding key var */
         }
-        if (ret == WALLY_OK) {
-            if (!(flags & WALLY_MINISCRIPT_ALLOW_NON_SANE)) {
-                ret = ensure_sane(ctx->top_node);
-                if (ret == WALLY_OK)
-                    ret = ensure_unique_keys(ctx);
-            }
+        if (ret == WALLY_OK && !(flags & WALLY_MINISCRIPT_ALLOW_NON_SANE)) {
+            ret = ensure_sane(ctx->top_node);
+            if (ret == WALLY_OK && !(flags & WALLY_MINISCRIPT_ONLY))
+                ret = ensure_base_root(ctx->top_node);
+            if (ret == WALLY_OK)
+                ret = ensure_unique_keys(ctx);
         }
     }
     if (ret != WALLY_OK) {
