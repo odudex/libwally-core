@@ -4250,106 +4250,115 @@ int wally_descriptor_derive_bip32_key_alloc(
     return ret;
 }
 
-static const char *get_multipath_child(const char* p, uint32_t *v)
+/* Derive [num_keys * num_multi] permutations for uniqueness checking */
+static int derive_all_pubkeys(const ms_ctx *ctx, unsigned char **pubkeys_out)
 {
-    *v = 0;
-    if (*p != '<' && *p != ';')
-        return NULL;
-    else {
-        ++p;
-        while (*p >= '0' && *p <= '9') {
-            *v *= 10;
-            *v += (*p++ - '0');
-        }
-        if (*p == '\'' || *p == 'h' || *p == 'H') {
-            *v |= BIP32_INITIAL_HARDENED_CHILD;
-            ++p;
+    ms_ctx key_ctx;
+    int ret = ctx_clone(ctx, 0, 0, 0, &key_ctx);
+
+    *pubkeys_out = NULL;
+    if (ret == WALLY_OK) {
+        const size_t num_permutations = ctx->keys.num_items * ctx->num_multipaths;
+        *pubkeys_out = wally_malloc(num_permutations * EC_PUBLIC_KEY_LEN);
+        if (!*pubkeys_out)
+            ret = WALLY_ENOMEM;
+    }
+
+    for (uint32_t i = 0; ret == WALLY_OK && i < ctx->keys.num_items; ++i) {
+        const ms_node *node = descriptor_get_key(ctx, i);
+        if (!node)
+            ret = WALLY_ERROR; /* Shouldn't happen! */
+
+        for (uint32_t m_i = 0; ret == WALLY_OK && m_i < ctx->num_multipaths; ++m_i) {
+            struct ext_key derived;
+
+            key_ctx.multi_index = m_i;
+            ret = node_derive_key(&key_ctx, node,
+                                  BIP32_FLAG_KEY_PUBLIC | BIP32_FLAG_SKIP_HASH,
+                                  &derived);
+            memcpy((*pubkeys_out) +
+                   ((m_i * ctx->keys.num_items) + i) * EC_PUBLIC_KEY_LEN,
+                   derived.pub_key, EC_PUBLIC_KEY_LEN);
         }
     }
-    return p;
+
+    if (ret != WALLY_OK) {
+        wally_free(*pubkeys_out);
+        *pubkeys_out = NULL;
+    }
+    ctx_clear(&key_ctx);
+    return ret;
 }
 
-static int are_keys_overlapped(const ms_ctx *ctx,
-                               const ms_node *lhs, const ms_node *rhs)
+static int ensure_unique_key_set(const ms_ctx *ctx, const unsigned char *pubkeys,
+                                 uint32_t *indices, size_t num_indices)
 {
-    const char *p;
-    uint32_t l1, l2, r1, r2;
-
-    if (lhs->data_len != rhs->data_len ||
-        memcmp(lhs->data, rhs->data, lhs->data_len))
-        return WALLY_OK; /* Different root keys */
-    if (lhs->child_path_len == rhs->child_path_len &&
-        (!lhs->child_path_len ||
-         !memcmp(lhs->child_path, rhs->child_path, lhs->child_path_len)))
-        return WALLY_EINVAL; /* Identical paths */
-    if (!(lhs->flags & WALLY_MS_IS_MULTIPATH))
-        return WALLY_OK; /* Non-identical ranged, non-multipath keys */
-    if (ctx->max_path_elems != 2 || !(rhs->flags & WALLY_MS_IS_MULTIPATH))
-        return WALLY_ERROR; /* Should never happen! */
-    /* Check the set of multi-path indices is disjoint */
-    if (!(p = get_multipath_child(strchr(lhs->child_path, '<'), &l1)) ||
-        !get_multipath_child(p, &l2) ||
-        !(p = get_multipath_child(strchr(rhs->child_path, '<'), &r1)) ||
-        !get_multipath_child(p, &r2))
-        return WALLY_ERROR; /* Should never happen! */
-    if (l1 == r1 || l1 == r2 || l2 == r1 || l2 == r2)
-        return WALLY_EINVAL; /* indices are not disjoint */
+    for (uint32_t m_i = 0; m_i < ctx->num_multipaths; ++m_i) {
+        const unsigned char *keys_p = pubkeys + (m_i * ctx->keys.num_items * EC_PUBLIC_KEY_LEN);
+        for (size_t i = 0; i < num_indices; ++i) {
+            for (size_t j = i + 1; j < num_indices; ++j) {
+                if (!memcmp(keys_p + indices[i] * EC_PUBLIC_KEY_LEN,
+                            keys_p + indices[j] * EC_PUBLIC_KEY_LEN,
+                            EC_PUBLIC_KEY_LEN))
+                    return WALLY_EINVAL; /* Duplicate key found */
+            }
+        }
+    }
     return WALLY_OK;
-}
-
-static bool have_overlapped_keys(const ms_ctx *ctx, const struct wally_map *m)
-{
-    /* Check all pairs of keys in the map */
-    for (size_t i = 0; i < m->num_items; ++i) {
-        const ms_node *lhs = (ms_node *)m->items[i].value;
-        for (size_t j = i + 1; j < m->num_items; ++j) {
-            const ms_node *rhs = (ms_node *)m->items[j].value;
-            if (are_keys_overlapped(ctx, lhs, rhs) != WALLY_OK)
-                return true;
-        }
-    }
-    return false;
 }
 
 static int ensure_unique_keys(const ms_ctx *ctx)
 {
-    struct wally_map m;
-    bool have_overlap = have_overlapped_keys(ctx, &ctx->keys);
+    unsigned char *pubkeys;
+    uint32_t *indices;
+    int ret;
 
-    if (have_overlap && tr_has_tree(ctx)) {
-        /* Tapscript with overlapping keys.
-         * Iterate each leaf script, and check for overlapping keys. */
-        ms_node *taptree = tr_get_tree(ctx);
-        uint32_t num_leaves;
-        if (!taptree)
-            return WALLY_EINVAL;
+    if (ctx->keys.num_items < 2)
+        return WALLY_OK; /* No repeats possible */
 
-        if (wally_map_init(ctx->keys.num_items, NULL, &m) != WALLY_OK)
-            return WALLY_ENOMEM;
+    if ((ret = derive_all_pubkeys(ctx, &pubkeys)) != WALLY_OK)
+        return ret;
 
-        have_overlap = false;
-        num_leaves = count_taptree_leaves(taptree);
-
-        for (size_t i = 0; !have_overlap && i < num_leaves; ++i) {
-            ms_node *leaf = find_taptree_leaf(taptree, i, NULL);
-            /* Collect the keys used by this script */
-            m.num_items = 0;
-            for (size_t key_index = 0; ; ++key_index) {
-                 ms_node * key_node = find_nth_key_in_subtree(leaf, key_index);
-                 if (!key_node)
-                     break;
-                 m.items[m.num_items].key_len = m.num_items;
-                 m.items[m.num_items].value = (unsigned char *)key_node;
-                 m.items[m.num_items].value_len = 1;
-                 ++m.num_items;
-            }
-            /* Check for overlapping keys */
-            have_overlap = have_overlapped_keys(ctx, &m);
-        }
-        m.num_items = 0; /* Dont free value pointers */
-        wally_map_clear(&m);
+    if (!(indices = wally_malloc(ctx->keys.num_items * sizeof(size_t)))) {
+        ret = WALLY_ENOMEM;
+        goto done;
     }
-    return have_overlap ? WALLY_EINVAL : WALLY_OK;
+
+    if (!tr_has_tree(ctx)) {
+        /* Non-taproot descriptor: Ensure all keys are disjoint */
+        for (uint32_t i = 0; i < ctx->keys.num_items; ++i)
+            indices[i] = i;
+        ret = ensure_unique_key_set(ctx, pubkeys, indices, ctx->keys.num_items);
+    } else {
+        /* Tapscript tree: Ensure each leaf script's keys are disjoint */
+        ms_node *taptree = tr_get_tree(ctx);
+        const uint32_t num_leaves = count_taptree_leaves(taptree);
+        if (!num_leaves) {
+            ret = WALLY_ERROR; /* Shouldn't happen! */
+            goto done;
+        }
+
+        for (uint32_t leaf_i = 0; leaf_i < num_leaves; ++leaf_i) {
+            uint32_t num_leaf_keys;
+            ret = wally_descriptor_get_taproot_leaf_num_keys(ctx, leaf_i,
+                                                             &num_leaf_keys);
+            if (ret != WALLY_OK)
+                goto done;
+            for (uint32_t leaf_key_i = 0; leaf_key_i < num_leaf_keys; ++leaf_key_i) {
+                ret = wally_descriptor_get_taproot_leaf_key_index(
+                        ctx, leaf_i, leaf_key_i, &indices[leaf_key_i]);
+                if (ret != WALLY_OK)
+                    goto done;
+            }
+            ret = ensure_unique_key_set(ctx, pubkeys, indices, num_leaf_keys);
+            if (ret != WALLY_OK)
+                goto done;
+        }
+    }
+done:
+    wally_free(pubkeys);
+    wally_free(indices);
+    return ret;
 }
 
 /* Fetch the leaf_index'th leaf (DFS order) of a tr() descriptor's taptree */

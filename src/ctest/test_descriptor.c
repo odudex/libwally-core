@@ -3786,9 +3786,12 @@ static bool check_sanity(void)
         { "eltr(x_only,1)", 0, false },
         { "ct(slip77(slip77_key),eltr(x_only,1))", 0, false },
 #endif
-        /* Each multi-path alternative is checked */
+        /* Each multi-path alternative is checked at its derivation level */
         { "wsh(multi(2," SANITY_XPUB "/<0;1>/*," SANITY_XPUB "/<2;3>/*))", 0, true },
+        { "wsh(multi(2," SANITY_XPUB "/<0;1;2>/*," SANITY_XPUB "/<2;0;1>/*))", 0, true },
         { "wsh(multi(2," SANITY_XPUB "/<0;1>/*," SANITY_XPUB "/<2;1>/*))", 0, false },
+        { "wsh(multi(2," SANITY_XPUB "/<0;1;2>/*," SANITY_XPUB "/<1;0;2>/*))", 0, false },
+        { "tr(x_only,multi_a(2," SANITY_XPUB "/<0;1>/*," SANITY_XPUB "/<1;0>/*))", 0, true },
         { "tr(x_only,multi_a(2," SANITY_XPUB "/<0;1>/*," SANITY_XPUB "/<2;1>/*))", 0, false },
     };
     const struct wally_map *keys = &g_vars[VARS_STD];
