@@ -2258,6 +2258,18 @@ static const descriptor_test g_descriptor_cases[] = {
         "ct(slip77(slip77_key),pk_h(key_4))",
         WALLY_NETWORK_LIQUID, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
     }, {
+        "descriptor errchk - ct pk expression must be type B",
+        "ct(slip77(slip77_key),v:pk(key_4))",
+        WALLY_NETWORK_LIQUID, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
+    }, {
+        "descriptor errchk - ct pkh expression must be type B",
+        "ct(slip77(slip77_key),a:pkh(key_4))",
+        WALLY_NETWORK_LIQUID, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
+    }, {
+        "descriptor errchk - ct multi expression must be type B",
+        "ct(slip77(slip77_key),v:multi(1,key_1,key_2))",
+        WALLY_NETWORK_LIQUID, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
+    }, {
         "descriptor errchk - no args to slip77()",
         "ct(slip77,elpkh(key_4))",
         WALLY_NETWORK_LIQUID, 0, 0, 0, NULL, 0, NULL, "", VARS_STD
@@ -3757,6 +3769,10 @@ static bool check_sanity(void)
         /* c: wrapper converts to a base expression by appending CHECKSIG */
         { "c:pk_k(key_local)", 0, true },
         { "c:pk_h(key_local)", 0, true },
+        { "v:pk(key_local)", 0, false },
+        { "a:pkh(key_local)", 0, false },
+        { "v:multi(1,key_local,key_remote)", 0, false },
+        { "and_v(v:pk(key_local),v:pk(key_remote))", 0, false },
         /* A repeated key */
         { "wsh(multi(2,key_local,key_remote,key_remote))", 0, false },
         { "wsh(and_v(v:pk(key_local),pk(key_local)))", 0, false },

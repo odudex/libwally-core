@@ -1262,6 +1262,9 @@ static int verify_ct(ms_ctx *ctx, ms_node *node)
         return WALLY_EINVAL; /* Blinding keys must be compressed non-x-only */
     }
     /* Ensure the second child is a valid top level node */
+    if ((node->child->next->kind & KIND_MINISCRIPT) &&
+        !(node->child->next->type_properties & TYPE_B))
+        return WALLY_EINVAL; /* Not a base expression, e.g. pk_k() or v:pk() */
     switch (node->child->next->kind) {
     case KIND_DESCRIPTOR_PK | KIND_MINISCRIPT_PK:
     case KIND_DESCRIPTOR_PKH | KIND_MINISCRIPT_PKH:
@@ -1272,12 +1275,9 @@ static int verify_ct(ms_ctx *ctx, ms_node *node)
     case KIND_DESCRIPTOR_WSH:
     case KIND_DESCRIPTOR_COMBO:
     case KIND_DESCRIPTOR_TR:
-        return WALLY_OK;
     case KIND_MINISCRIPT_PK_K:
     case KIND_MINISCRIPT_PK_H:
-        if (node->child->next->type_properties & TYPE_B)
-            return WALLY_OK; /* Base expression: OK */
-        break;
+        return WALLY_OK;
     }
     return WALLY_EINVAL;
 }
@@ -3640,17 +3640,12 @@ static int ensure_sane(const ms_node *node)
 
 static int ensure_base_root(const ms_node *node)
 {
-    /* Ensure the root node is a base expression. For now this just
-     * checks top level pk_k/pk_h expressions; all other expressions
-     * are checked during parsing. */
-    if (node->builtin) {
-        const struct ms_builtin_t *builtin = builtin_get(node);
-        if (builtin->kind == KIND_MINISCRIPT_PK_K ||
-            builtin->kind == KIND_MINISCRIPT_PK_H) {
-            if (!(node->type_properties & TYPE_B))
-                return WALLY_EINVAL; /* Not a base expression */
-        }
-    }
+    /* Ensure a root miniscript expression is a base expression, i.e. that
+     * it leaves a single true value on success. Descriptor-only
+     * expressions such as wpkh() have no miniscript type to check. */
+    if (node->builtin && (builtin_get(node)->kind & KIND_MINISCRIPT) &&
+        !(node->type_properties & TYPE_B))
+        return WALLY_EINVAL; /* Not a base expression, e.g. pk_k() or v:pk() */
     return WALLY_OK;
 }
 
