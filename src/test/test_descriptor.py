@@ -494,6 +494,9 @@ class DescriptorTests(unittest.TestCase):
             # Key multi-paths must be disjoint sets at each derivation step
             [P, 'sh(multi(1,@0/<0;1>/*,@0/<2;1>/*))', [xpub1]],
             [P, 'sh(multi(1,@0/<1;0>/*,@0/<1;2>/*))', [xpub1]],
+            # Key multi-paths must be disjoint sets (BIP-388)
+            [P, 'sh(multi(1,@0/<0;1>/*,@0/<1;2>/*))', [xpub1]],
+            [P, 'sh(multi(1,@0/<1;0>/*,@0/<2;1>/*))', [xpub1]],
             # Keys must not be negative
             [P, 'pkh(@-1/*)', {'@-1': xpub1}],
             # Keys must not have leading space

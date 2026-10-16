@@ -1512,6 +1512,12 @@ static const descriptor_test g_descriptor_cases[] = {
         WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, WALLY_MINISCRIPT_POLICY_TEMPLATE,
         "a9146cc69bc5443e97b8a30918cb6297ba4efb3d6dc387",
         "45w36ywr", VARS_P_2
+    }, {
+        "policy - reused key with disjoint multi-paths (taproot)",
+        "tr(@0/**,pk(@0/<2;3>/*))", /* As in BIP-388 */
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL, WALLY_MINISCRIPT_POLICY_TEMPLATE,
+        "5120f6f7305f44b787c9e6fd4ae3cdbef9202610943700cb1e13c5661fe9246cc67a",
+        "39cjmzeh", VARS_P_1
     },
 #ifdef BUILD_ELEMENTS
     /* Elements/Confidential wallet policies */
@@ -2207,6 +2213,13 @@ static const descriptor_test g_descriptor_cases[] = {
     }, {
         "policy errchk - invalid key cardinality (variant)",
         "combo(@0/**)",
+        WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL,
+        WALLY_MINISCRIPT_POLICY_TEMPLATE, NULL, "", VARS_P_1
+    }, {
+        /* BIP-388: a reused key's multi-paths must be disjoint sets,
+         * including between the internal key and taptree leaves */
+        "policy errchk - reused key with overlapping multi-paths (taproot)",
+        "tr(@0/**,pk(@0/<1;2>/*))",
         WALLY_NETWORK_BITCOIN_MAINNET, 0, 0, 0, NULL,
         WALLY_MINISCRIPT_POLICY_TEMPLATE, NULL, "", VARS_P_1
     }

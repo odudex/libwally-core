@@ -268,7 +268,7 @@ static bool index_args_valid(const struct wally_descriptor *descriptor,
            multi_index < descriptor->num_multipaths;
 }
 
-static int ensure_unique_keys(const ms_ctx *ctx);
+static int ensure_unique_keys(const ms_ctx *ctx, bool is_policy);
 
 /* Built-in miniscript expressions */
 typedef int (*node_verify_fn_t)(ms_ctx *ctx, ms_node *node);
@@ -3733,7 +3733,7 @@ int wally_descriptor_parse(const char *miniscript,
             if (ret == WALLY_OK && !(flags & WALLY_MINISCRIPT_ONLY))
                 ret = ensure_base_root(ctx->top_node);
             if (ret == WALLY_OK)
-                ret = ensure_unique_keys(ctx);
+                ret = ensure_unique_keys(ctx, flags & WALLY_MINISCRIPT_POLICY_TEMPLATE);
         }
     }
     if (ret != WALLY_OK) {
@@ -4294,24 +4294,42 @@ static int derive_all_pubkeys(const ms_ctx *ctx, unsigned char **pubkeys_out)
     return ret;
 }
 
-static int ensure_unique_key_set(const ms_ctx *ctx, const unsigned char *pubkeys,
-                                 uint32_t *indices, size_t num_indices)
+/* Return the pubkey derived by derive_all_pubkeys for a key and multi-path */
+static const unsigned char *get_derived_pubkey(const ms_ctx *ctx,
+                                               const unsigned char *pubkeys,
+                                               size_t multi_index, size_t key_index)
 {
-    for (uint32_t m_i = 0; m_i < ctx->num_multipaths; ++m_i) {
-        const unsigned char *keys_p = pubkeys + (m_i * ctx->keys.num_items * EC_PUBLIC_KEY_LEN);
-        for (size_t i = 0; i < num_indices; ++i) {
-            for (size_t j = i + 1; j < num_indices; ++j) {
-                if (!memcmp(keys_p + indices[i] * EC_PUBLIC_KEY_LEN,
-                            keys_p + indices[j] * EC_PUBLIC_KEY_LEN,
-                            EC_PUBLIC_KEY_LEN))
-                    return WALLY_EINVAL; /* Duplicate key found */
+    return pubkeys + (multi_index * ctx->keys.num_items + key_index) * EC_PUBLIC_KEY_LEN;
+}
+
+/* Ensure the given keys are distinct for each multi-path alternative.
+ * If across_multipaths is true, a key derived for one alternative must
+ * also differ from the other keys derived for every other alternative */
+static int ensure_unique_key_set(const ms_ctx *ctx, const unsigned char *pubkeys,
+                                 const uint32_t *indices, size_t num_indices,
+                                 bool across_multipaths)
+{
+    const size_t num_multipaths = ctx->num_multipaths;
+
+    for (size_t i = 0; i < num_indices; ++i) {
+        for (size_t j = i + 1; j < num_indices; ++j) {
+            for (size_t m_i = 0; m_i < num_multipaths; ++m_i) {
+                const unsigned char *lhs = get_derived_pubkey(ctx, pubkeys, m_i, indices[i]);
+                const size_t m_start = across_multipaths ? 0 : m_i;
+                const size_t m_end = across_multipaths ? num_multipaths : m_i + 1;
+
+                for (size_t m_j = m_start; m_j < m_end; ++m_j) {
+                    if (!memcmp(lhs, get_derived_pubkey(ctx, pubkeys, m_j, indices[j]),
+                                EC_PUBLIC_KEY_LEN))
+                        return WALLY_EINVAL; /* Duplicate key found */
+                }
             }
         }
     }
     return WALLY_OK;
 }
 
-static int ensure_unique_keys(const ms_ctx *ctx)
+static int ensure_unique_keys(const ms_ctx *ctx, bool is_policy)
 {
     unsigned char *pubkeys;
     uint32_t *indices;
@@ -4328,11 +4346,14 @@ static int ensure_unique_keys(const ms_ctx *ctx)
         goto done;
     }
 
-    if (!tr_has_tree(ctx)) {
-        /* Non-taproot descriptor: Ensure all keys are disjoint */
+    if (is_policy || !tr_has_tree(ctx)) {
+        /* Non-taproot descriptor or policy: Ensure all keys are disjoint.
+         * BIP-388 policies may only reuse a key with disjoint multi-path
+         * derivations, anywhere in the expression including any taptree */
         for (uint32_t i = 0; i < ctx->keys.num_items; ++i)
             indices[i] = i;
-        ret = ensure_unique_key_set(ctx, pubkeys, indices, ctx->keys.num_items);
+        ret = ensure_unique_key_set(ctx, pubkeys, indices,
+                                    ctx->keys.num_items, is_policy);
     } else {
         /* Tapscript tree: Ensure each leaf script's keys are disjoint */
         ms_node *taptree = tr_get_tree(ctx);
@@ -4354,7 +4375,7 @@ static int ensure_unique_keys(const ms_ctx *ctx)
                 if (ret != WALLY_OK)
                     goto done;
             }
-            ret = ensure_unique_key_set(ctx, pubkeys, indices, num_leaf_keys);
+            ret = ensure_unique_key_set(ctx, pubkeys, indices, num_leaf_keys, false);
             if (ret != WALLY_OK)
                 goto done;
         }
