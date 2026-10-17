@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include <wally_address.h>
+#include <wally_bip32.h>
 #include <wally_crypto.h>
 #include <wally_psbt.h>
 #include <stdbool.h>
@@ -140,6 +141,45 @@ static void check_signer_modifiable_flags(void)
     if (wally_psbt_sign(psbt, priv_key, sizeof(priv_key), 0) != WALLY_OK ||
         psbt->inputs[0].signatures.num_items != 1 || psbt->tx_modifiable_flags)
         fail("Signing a v0 PSBT set modifiable flags");
+    wally_psbt_free(psbt);
+    wally_bzero(priv_key, sizeof(priv_key));
+}
+
+static wally_malloc_t real_malloc_fn;
+static size_t num_ext_key_allocs;
+
+static void *counting_malloc(size_t size)
+{
+    if (size == sizeof(struct ext_key))
+        ++num_ext_key_allocs;
+    return real_malloc_fn(size);
+}
+
+/* Signing must not copy the derived private keys to the heap */
+static void check_signer_key_allocations(void)
+{
+    struct wally_operations ops = { sizeof(ops), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+    struct wally_psbt *psbt = signer_psbt(WALLY_PSBT_VERSION_2, 0);
+    unsigned char priv_key[EC_PRIVATE_KEY_LEN];
+    int ret;
+
+    if (wally_wif_to_bytes(SIGNER_WIF, WALLY_ADDRESS_VERSION_WIF_TESTNET, 0,
+                           priv_key, sizeof(priv_key)) != WALLY_OK ||
+        wally_get_operations(&ops) != WALLY_OK)
+        fail("Failed to set up key allocation check");
+    real_malloc_fn = ops.malloc_fn;
+    ops.malloc_fn = counting_malloc;
+    if (wally_set_operations(&ops) != WALLY_OK)
+        fail("Failed to set malloc_fn");
+    num_ext_key_allocs = 0;
+    ret = wally_psbt_sign(psbt, priv_key, sizeof(priv_key), 0);
+    ops.malloc_fn = real_malloc_fn;
+    if (wally_set_operations(&ops) != WALLY_OK)
+        fail("Failed to restore malloc_fn");
+    if (ret != WALLY_OK || psbt->inputs[0].signatures.num_items != 1)
+        fail("Failed to sign for key allocation check");
+    if (num_ext_key_allocs)
+        fail("Signing allocated %zu extended keys", num_ext_key_allocs);
     wally_psbt_free(psbt);
     wally_bzero(priv_key, sizeof(priv_key));
 }
@@ -295,6 +335,7 @@ int main(void)
     }
 
     check_signer_modifiable_flags();
+    check_signer_key_allocations();
 
     wally_cleanup(0);
     return 0;
