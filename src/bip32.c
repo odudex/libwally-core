@@ -216,6 +216,7 @@ static int path_from_str_n(const char *str, size_t str_len,
             v = child_num; /* Use the given child number for the wildcard value */
             if (i < str_len && is_hardened_indicator(str[i], allow_upper)) {
                 v |= BIP32_INITIAL_HARDENED_CHILD;
+                *features |= BIP32_PATH_IS_HARDENED;
                 ++i;
             }
         } else {
